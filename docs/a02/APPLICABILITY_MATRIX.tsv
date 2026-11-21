@@ -1,0 +1,11 @@
+case_family_id	applicability	native_validation	evidence_status
+C00	CONDITIONAL	Actual General/Light FP32 runtime linkage unavailable	NOT_RUN
+C01	REQUIRED	Scalar and rank boundary checks in paper model; engine eligibility separate	NOT_RUN
+C02	REQUIRED	Signed address, storage and permission checks in paper model	NOT_RUN
+C03	REQUIRED	Checked overflow and work-limit tests in paper model	NOT_RUN
+C04	REQUIRED	Independent correctness checks and ablation controls	NOT_RUN
+C05	REQUIRED	Frozen corpus and prospective holdout selection unavailable	NOT_RUN
+C06	REQUIRED	Deliberate mutations in development cases	NOT_RUN
+C07	CONDITIONAL	Paper CPU tests; real engine/device comparison unavailable	NOT_RUN
+C08	REQUIRED	Composed view rewrites and independent interpreter development tests	NOT_RUN
+C09	REQUIRED	Proof-only certificate and SMT development tests; future NTE1 route	NOT_RUN

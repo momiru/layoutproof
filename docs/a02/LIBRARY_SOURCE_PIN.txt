@@ -1,0 +1,7 @@
+# A02 code provenance; this is not evidence of a successful proof.
+language=rust
+source_repo=taleblou/momiru
+source_sha=305e8b3581f124dcc8390cac54f53396e7efde10
+source_state=DIRTY_LOCAL_LIBRARY_NOT_INCLUDED_IN_PIN
+source_qualification=DEPENDENCY_DIRTY_UNVERIFIED
+working_tree_changes_excluded_from_pin=12
