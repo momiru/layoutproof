@@ -1,0 +1,150 @@
+name: LayoutProof CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cpu:
+    name: CPU tests and Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /Cargo.lock
+            /Cargo.toml
+            /README.md
+            /build.rs
+            /rust-toolchain.toml
+            /adapters/
+            /src/
+            /tests/
+            !/**/legacy/
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
+      - name: Install Z3 for independent replay
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y z3
+          z3 --version
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check all targets and features
+        run: cargo check --offline --locked --all-targets --all-features
+      - name: Run CPU tests with Z3 on PATH
+        run: cargo test --offline --locked --all-targets --all-features
+      - name: Replay the emitted SMT-LIB query in a separate process
+        run: |
+          answer=$(cargo run --quiet --offline --locked --bin a02-layoutproof -- \
+            --mode query --case C09-slice-fusion | z3 -in -smt2)
+          printf '%s\n' "$answer"
+          test "$answer" = unsat
+      - name: Run Clippy with warnings denied
+        run: cargo clippy --offline --locked --all-targets --all-features -- -D warnings
+
+  release:
+    # Optimized native executable build. Momiru's upstream aot feature is a separate engine check.
+    name: Native release build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /Cargo.lock
+            /Cargo.toml
+            /README.md
+            /build.rs
+            /rust-toolchain.toml
+            /adapters/
+            /src/
+            /tests/
+            !/**/legacy/
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
+      - name: Install Z3 for release-mode solver tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y z3
+          z3 --version
+      - name: Build the optimized LayoutProof executable
+        run: cargo build --offline --locked --release --bin a02-layoutproof
+      - name: Run all release-mode tests
+        run: cargo test --offline --locked --release --all-targets --all-features
+      - name: Run the built executable
+        run: ./target/release/a02-layoutproof --paper A02 --engine model --case C08-composed --seed 7
+
+  source-policy:
+    name: Rust source policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: /Cargo.toml
+      - name: Check tracked modern paths and file modes
+        run: |
+          git ls-files --stage -z -- . ':(exclude,glob)legacy/**' ':(exclude,glob)**/legacy/**' |
+            (
+              invalid=0
+              while IFS= read -r -d '' entry; do
+                mode=${entry%% *}
+                path=${entry#*$'\t'}
+                if [[ $mode != 100644 ]]; then
+                  printf 'Disallowed tracked file mode %s for %q\n' "$mode" "$path" >&2
+                  invalid=1
+                  continue
+                fi
+                case "$path" in
+                  .gitignore|Cargo.lock|Cargo.toml|rust-toolchain.toml|README.md|LICENSE|build.rs) ;;
+                  src/*.rs|adapters/*.rs|tests/*.rs|benches/*.rs|examples/*.rs) ;;
+                  docs/a02/raw_samples.tsv|docs/a02/*/raw_samples.tsv)
+                    printf 'Raw samples must stay outside Git: %q\n' "$path" >&2
+                    invalid=1
+                    ;;
+                  docs/a02/*.md|docs/a02/*.tsv|docs/a02/*.txt|.github/workflows/*.yml|.github/workflows/*.yaml) ;;
+                  *)
+                    printf 'Path violates the native source policy: %q\n' "$path" >&2
+                    invalid=1
+                    ;;
+                esac
+              done
+              exit "$invalid"
+            )
+
+  security:
+    name: Security dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: /Cargo.lock
+      - name: Install the pinned RustSec auditor
+        working-directory: ${{ runner.temp }}
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          cargo +1.99.1 install --locked --version '=0.22.2' cargo-audit
+      - name: Audit the committed lockfile
+        working-directory: ${{ runner.temp }}
+        run: |
+          test -s "$GITHUB_WORKSPACE/Cargo.lock"
+          cargo +1.99.1 audit --file "$GITHUB_WORKSPACE/Cargo.lock"
