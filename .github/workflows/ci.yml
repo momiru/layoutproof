@@ -138,13 +138,21 @@ jobs:
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: /Cargo.lock
-      - name: Install the pinned RustSec auditor
-        working-directory: ${{ runner.temp }}
-        run: |
-          rustup toolchain install 1.99.1 --profile minimal
-          cargo +1.99.1 install --locked --version '=0.22.2' cargo-audit
-      - name: Audit the committed lockfile
+      - name: Verify the RustSec release and audit the committed lockfile
         working-directory: ${{ runner.temp }}
         run: |
           test -s "$GITHUB_WORKSPACE/Cargo.lock"
-          cargo +1.99.1 audit --file "$GITHUB_WORKSPACE/Cargo.lock"
+          asset=cargo-audit-x86_64-unknown-linux-musl-v0.22.2
+          # SHA-256 published for this asset on the RustSec release page.
+          checksum=7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428
+          audit_dir=$(mktemp -d "$RUNNER_TEMP/rustsec.XXXXXXXX")
+          trap 'rm -rf -- "$audit_dir"' EXIT
+          archive="$audit_dir/$asset.tgz"
+          curl --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 30 --retry 2 --retry-max-time 90 \
+            --output "$archive" \
+            "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/$asset.tgz"
+          printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$archive" --directory "$audit_dir" "$asset/cargo-audit"
+          "$audit_dir/$asset/cargo-audit" audit --file "$GITHUB_WORKSPACE/Cargo.lock"
