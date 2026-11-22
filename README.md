@@ -6,9 +6,10 @@ The crate provides a typed layout IR, checked affine lowering, an independent bo
 
 ## Build and run
 
-Rust 1.99.1 is pinned. Cargo dependencies are limited to the Rust standard library. Z3 on `PATH` is required for solver replay and is optional for finite checks.
+Rust 1.99.1 and Momiru commit `eba302d3c61313444b56303c8816f74a3aaf9679` are pinned. Fetch the locked Git dependency before running offline Cargo commands. Z3 on `PATH` is required for solver replay and is optional for finite checks.
 
 ```sh
+cargo fetch --locked
 cargo fmt --all -- --check
 cargo check --offline --locked --all-targets --all-features
 cargo test --offline --locked --all-targets --all-features
@@ -18,6 +19,7 @@ cargo run --offline --locked --bin a02-layoutproof -- --list
 cargo run --offline --locked --bin a02-layoutproof -- --paper A02 --case C08-composed --seed 7
 cargo run --offline --locked --bin a02-layoutproof -- --mode symbolic --case C09-slice-fusion
 cargo run --offline --locked --bin a02-layoutproof -- --mode affine --case C08-composed
+cargo run --offline --locked --bin a02-layoutproof -- --mode engine-check --engine both --case C08-composed
 ```
 
 The release runner supports allocation-inclusive development timings for cases that pass independent preflight and postflight correctness checks.
@@ -31,9 +33,9 @@ For reproducibility, record the exact paper source state, including local change
 
 ## Scope and evidence
 
-This paper crate runs a CPU model. It is independent of the upstream Momiru General and Light engines. The Light adapter imports caller-supplied read-only FP32 metadata and backing bits, with a rank limit of eight. There is no live engine linkage. The separate [library source pin](docs/a02/LIBRARY_SOURCE_PIN.txt) records the last committed revision and its dirty checkout qualification. The [source audit](docs/a02/AUDIT_A02_MOMIRU.md) records missing General and benchmark sources.
+The CPU model and live-engine checks are separate development modes. The native adapter calls Momiru General's runtime-rank FP32 views and Light's const-rank FP32 views through their public APIs. It compares engine shapes, backing addresses and exact payloads to the independent interpreter. Mutable-view regressions test alias rejection and actual write post-state. Light supports ranks zero through eight. General tests include ranks nine and sixteen. Native reshapes are limited to the engines' forward-contiguous view contracts. [Library source pin](docs/a02/LIBRARY_SOURCE_PIN.txt) · [Source audit](docs/a02/AUDIT_A02_MOMIRU.md)
 
-Finite checks apply to the concrete input. Fixed-shape SMT replay establishes address obligations for the checked input. Rank-polymorphic SMT replay covers selected local rules under their preconditions. Arbitrary rewrite programs, mutating kernels, device execution, and production-engine equivalence remain outside the verified scope.
+Finite checks apply to the concrete input. Fixed-shape SMT replay checks address obligations for the supplied input. The symbolic certificates encode directed definedness for selected axis-local rules, and replay on a concrete layout checks both programs before invoking Z3. Writable lease checks cover supplied live peer regions. Device execution, arbitrary-program proof, and confirmatory engine comparisons remain outside the verified scope.
 
 Canonical QTC1, QTO1, NTE1, and native evidence documents or vectors are missing. Evidence mode reports `NOT_RUN CANONICAL_PROTOCOLS_MISSING` and produces no files. The development cases and diagnostic timings are for local validation.
 

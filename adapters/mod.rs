@@ -1,4 +1,4 @@
-//! Explicit engine boundary. The standalone verifier has no Momiru linkage.
+//! Paper adapters for model snapshots and the pinned Momiru engines.
 
 use crate::ir::{Fault, Layout, Permission, StorageId, ValueBits};
 
@@ -31,3 +31,5 @@ pub fn light_snapshot<const R: usize>(
     crate::lower::compile(&layout, &[], 0)?;
     Ok((layout, backing.iter().map(|v| v.to_bits()).collect()))
 }
+
+pub mod a02_momiru;

@@ -71,6 +71,16 @@ pub fn interpret(
     layout: &Layout,
     storage: &[ValueBits],
     ops: &[Op],
+    budget: usize,
+) -> Result<Observation, Fault> {
+    interpret_with_peers(layout, storage, ops, &[], budget)
+}
+
+pub fn interpret_with_peers(
+    layout: &Layout,
+    storage: &[ValueBits],
+    ops: &[Op],
+    peers: &[Layout],
     mut budget: usize,
 ) -> Result<Observation, Fault> {
     if layout.capacity != storage.len() {
@@ -91,22 +101,9 @@ pub fn interpret(
         permission: layout.permission,
         storage: layout.storage,
     };
-    let mut seen = HashSet::new();
     visit(&obs.shape, |index| {
-        let mut offset = i128::from(layout.origin);
-        for (axis, &i) in index.iter().enumerate() {
-            offset = offset
-                .checked_add(i as i128 * i128::from(layout.strides[axis]))
-                .ok_or(Fault::Overflow)?;
-        }
-        let offset = i64::try_from(offset)
-            .ok()
-            .and_then(|o| usize::try_from(o).ok())
-            .ok_or(Fault::Bounds)?;
+        let offset = input_offset(layout, index)?;
         let &value = storage.get(offset).ok_or(Fault::Bounds)?;
-        if layout.permission == Permission::Exclusive && !seen.insert(offset) {
-            return Err(Fault::WriteOverlap);
-        }
         obs.cells.push(Cell {
             input_ordinal: obs.cells.len(),
             address: Address {
@@ -117,7 +114,37 @@ pub fn interpret(
         });
         Ok(())
     })?;
-    let mut used_storage = HashSet::from([obs.storage]);
+    let offsets: HashSet<_> = obs.cells.iter().map(|cell| cell.address.offset).collect();
+    if layout.permission == Permission::Exclusive && offsets.len() != obs.cells.len() {
+        return Err(Fault::WriteOverlap);
+    }
+    for peer in peers.iter().filter(|peer| peer.storage == layout.storage) {
+        if peer.capacity != layout.capacity {
+            return Err(Fault::StorageExtent);
+        }
+        if peer.shape.len() != peer.strides.len() {
+            return Err(Fault::RankMismatch);
+        }
+        charge(&peer.shape, &mut budget)?;
+        if peer.shape.contains(&0)
+            && !(0..=peer.capacity as i128).contains(&i128::from(peer.origin))
+        {
+            return Err(Fault::Bounds);
+        }
+        let writes =
+            layout.permission == Permission::Exclusive || peer.permission == Permission::Exclusive;
+        let mut overlaps = false;
+        visit(&peer.shape, |index| {
+            let offset = input_offset(peer, index)?;
+            overlaps |= writes && offsets.contains(&offset);
+            Ok(())
+        })?;
+        if overlaps {
+            return Err(Fault::LivePeerOverlap);
+        }
+    }
+    let mut used_storage: HashSet<_> = peers.iter().map(|peer| peer.storage).collect();
+    used_storage.insert(obs.storage);
     for op in ops {
         if let Op::Materialize(storage) = op {
             if !used_storage.insert(*storage) {
@@ -127,6 +154,23 @@ pub fn interpret(
         apply(&mut obs, op, &mut budget)?;
     }
     Ok(obs)
+}
+
+fn input_offset(layout: &Layout, index: &[usize]) -> Result<usize, Fault> {
+    let mut offset = i128::from(layout.origin);
+    for (axis, &i) in index.iter().enumerate() {
+        offset = offset
+            .checked_add(i as i128 * i128::from(layout.strides[axis]))
+            .ok_or(Fault::Overflow)?;
+    }
+    let offset = i64::try_from(offset)
+        .ok()
+        .and_then(|o| usize::try_from(o).ok())
+        .ok_or(Fault::Bounds)?;
+    if offset >= layout.capacity {
+        return Err(Fault::Bounds);
+    }
+    Ok(offset)
 }
 
 fn dim(shape: &[usize], axis: usize) -> Result<usize, Fault> {

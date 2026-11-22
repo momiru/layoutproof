@@ -1,15 +1,12 @@
 # Momiru source audit
 
-The paper checkout initially tracked README.md and LICENSE and had an existing untracked library pin. There was no baseline Cargo target or existing paper test to run. The pinned upstream commit and dirty checkout are different snapshots. The pin remains unchanged.
+The independent checkout was clean at `eba302d3c61313444b56303c8816f74a3aaf9679`. Cargo discovered 30 targets with all 23 declared benchmark files and both engine modules present. The five upstream A02 test targets ran in a target directory inside the paper workspace. Only the paper checkout was writable.
 
-| Location in independent checkout | Observed capability |
+| Modern source | Observed public interface and integration |
 | --- | --- |
-| `Cargo.toml` and `rust-toolchain.toml` | Rust 1.99.1, edition 2021, no Cargo dependencies, optional `aot`. Current manifest points to `src/momiru/lib.rs` and the pin points to `src/lib.rs`. Both declare 23 benchmarks with absent source in the available modern tree. |
-| `src/momiru/lib.rs` | Declares independent `tensor` and `tensor_light` modules. The runtime-rank General module is absent from both available source inventories. |
-| `src/momiru/tensor_light/tensor/layout.rs` | `Layout<R>::new(dims, strides, origin, capacity)`, `checked_offset([usize; R])`, and internal overlap classification. |
-| `src/momiru/tensor_light/tensor/signed_view.rs` | Dirty checkout exposes `SignedTensorView::new(dims, strides, origin, storage)` and `get([usize; R]) -> Result<f32, TensorError>`. Read-only signed view operators include reshape, permutation, flip and broadcast. These signatures are source observations. |
-| `src/momiru/tensor_light/tensor/signed_view_mut.rs` | Separate dirty mutable view source. No borrowing or interoperation guarantee is inferred for the pinned commit. |
-| `tests/a02_light_layout.rs`, `tests/a02_borrowed_signed_views.rs`, `tests/a02_stride_spacing.rs` | Present in dirty upstream. No test copied or changed. |
-| `.github/workflows/` | Upstream CI, benchmark, release and security workflows exist. The paper has no inherited CI target. |
+| `src/momiru/tensor/mod.rs` | Runtime-rank General exposes `TensorView::new`, `layout().checked_offset`, `get`, `permute`, `flip`, count-based `slice_axis`, `reshape_view` and `broadcast_to`. Native reshape requires forward C-contiguity. The exclusive `TensorViewMut::new` checks proven uniqueness and `get_mut` writes through the borrow. |
+| `src/momiru/tensor_light/tensor/signed_view.rs` | Light exports const-rank FP32 `SignedTensorView<R>` for ranks zero through eight. It exposes native signed slicing, permutation, flip, broadcast, expansion, squeeze, reshape and shared references. Reshape requires forward C-contiguity. |
+| `src/momiru/tensor_light/tensor/signed_view_mut.rs` | `SignedTensorViewMut<R>::new` checks uniqueness and `set` mutates the storage. |
+| `Cargo.toml` | Both engines build from one crate with distinct modules. The upstream `aot` feature is available and paper CI forwards it through Cargo. |
 
-Baseline library Cargo execution was NOT_RUN in this work order. Target and module discovery already failed at source inspection and the library is outside writable scope. General, Light, device and AOT runtime execution are unverified for this paper. The native paper crate owns the IR, semantics, interpreter and proof experiments. Adapter descriptors are explicit and preserve engine boundaries without linking the dirty upstream checkout.
+The paper adapter uses both engines' view APIs on actual backing slices and verifies observations against the paper interpreter. The parent library remains a separate Git dependency. The canonical Git URL and exact revision are stored in the paper manifest and lockfile. In this environment Cargo resolved the canonical URL using a per-command rewrite to the exact local Git object store. GitHub check runs for the library were unreachable from this session. The existing library pin's upstream CI annotation is orchestrator-supplied metadata. Direct local all-target/all-feature library Clippy with warnings denied failed on `tensor_light::aot::cpu_sgemm_primary_seed` having eight arguments. No upstream or lint-gate change was made.

@@ -6,7 +6,7 @@ pub struct StorageId(pub u64);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Permission {
     ReadOnly,
-    /// The caller grants exclusive use of this storage for the modeled lifetime.
+    /// Exclusive use of this view's reachable region for the modeled lifetime.
     Exclusive,
 }
 
@@ -76,6 +76,7 @@ pub enum Fault {
     RequiresCopy,
     WriteDenied,
     WriteOverlap,
+    LivePeerOverlap,
     WorkLimit,
 }
 

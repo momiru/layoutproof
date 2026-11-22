@@ -1,28 +1,40 @@
-# Native build and execution log
+# A02 Rust validation log
 
-The paper crate used rustc 1.99.1 (`58cf8f9c3`), Cargo 1.99.1 (`5f94df478`), and Z3 4.8.12 on `x86_64-unknown-linux-gnu`. The paper worktree started at `8416d9b2808afb581b51097f5a77bf4a62ef8843`, and validation used the local changes described in the patch manifest. This is a development validation record.
+Validated with Rust and Cargo 1.99.1 and Z3 4.8.12 on x86-64 Linux. The initial paper HEAD was `78fe9de`. The independent Momiru source was clean at `eba302d3c61313444b56303c8816f74a3aaf9679`. All build and Cargo-cache output used the paper's ignored `target/a02-v7` directory.
 
-| Command | Exit | Observed outcome |
+## Paper
+
+Commands below used `CARGO_HOME="$PWD/target/a02-v7/cargo-home"` and, for the final validation sequence, `CARGO_TARGET_DIR="$PWD/target/a02-v7/paper"`. Cargo generated the lockfile using a scoped Git URL rewrite from the manifest's canonical remote to the exact local Git object store. The lockfile retains the canonical URL and exact revision.
+
+| Command | Exit | Result |
 | --- | ---: | --- |
-| `cargo generate-lockfile --offline` | 0 | Generated the package-only lockfile. |
+| `cargo generate-lockfile` with the scoped URL rewrite | 0 | Locked Momiru by its full Git revision. |
+| `cargo test --offline --locked --target-dir target/a02-v7/paper --test a02_redteam_regressions` before semantic fixes | 101 | Definedness witnesses reproduced and bounds/alias precedence produced `ERROR` instead of `REJECTED`. |
+| `cargo test --offline --locked --target-dir target/a02-v7/paper --test a02_momiru_link --test a02_redteam_regressions` | 0 | Five live-engine and six red-team regressions passed after fixes. |
 | `cargo fmt --all -- --check` | 0 | Formatting gate. |
-| `cargo check --offline --locked --all-targets --all-features` | 0 | All paper targets checked. |
-| `cargo test --offline --locked --all-targets --all-features` | 0 | 16 passed, 0 failed, 0 ignored. |
-| `cargo test --offline --locked --release --all-targets --all-features` | 0 | 16 passed, 0 failed, 0 ignored. |
-| `cargo clippy --offline --locked --all-targets --all-features -- -D warnings` | 0 | Final run clean. The first run exited 101 for two avoidable test clones, which were corrected. |
-| `cargo run --offline --locked --bin a02-layoutproof -- --paper A02 --case C08-composed --seed 7` | 0 | PASS on the concrete composition. |
-| `cargo run --offline --locked --bin a02-layoutproof -- --mode manual --case C08-flip-involution` | 0 | PASS on the manually allowed cancellation. |
-| `cargo run --offline --locked --bin a02-layoutproof -- --mode symbolic --case C09-slice-fusion` | 0 | Z3 returned UNSAT for the negated identity. |
-| `cargo run --offline --locked --bin a02-layoutproof -- --mode affine --case C08-composed` | 0 | Z3 returned UNSAT for a fixed-shape address mismatch. |
-| `cargo run --offline --locked --bin a02-layoutproof -- --mode affine --case C08-address-witness` | 1 | FAIL with independently checked SAT witness `[0, 0]`. |
-| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode query --case C09-slice-fusion \| z3 -in -smt2` with pipefail | 0 | Separate solver process returned `unsat`. |
-| `cargo run --offline --locked --bin a02-layoutproof -- --mode symbolic --case C09-slice-fusion --timeout-ms 0` | 1 | UNKNOWN due to zero budget. No solver was started. |
-| `cargo run --offline --locked --bin a02-layoutproof -- --mode evidence --engine both --output-root target/a02-evidence-smoke` | 1 | NOT_RUN. No evidence directory was created. |
-| `cargo run --offline --locked --release --bin a02-layoutproof -- --paper A02 --engine model --case C08-composed --seed 7 --mode bench --warmup 1 --samples 2` | 0 | One local diagnostic warmup and two samples. No canonical run. |
-| `cargo run --offline --locked --bin a02-layoutproof -- --mode bench --case C08-materialize-mutant` | 1 | The oracle rejected the candidate. No timing samples. |
-| `cargo run --offline --locked --bin a02-layoutproof -- --engine general` | 1 | UNSUPPORTED because live engine linkage is unavailable. |
-| `cargo package --offline --locked --allow-dirty --list` | 0 | Source whitelist verified. |
-| `cargo package --offline --locked --allow-dirty` | 0 | Packaged and compiled the standalone source archive. |
+| `cargo check --offline --locked --all-targets --all-features` | 0 | All current paper targets including forwarded AOT compilation. |
+| `cargo test --offline --locked --all-targets --all-features --quiet` | 0 | 27 passed. |
+| `cargo test --offline --locked --release --all-targets --all-features --quiet` | 0 | 27 passed. |
+| `cargo clippy --offline --locked --all-targets --all-features -- -D warnings` | 0 | Paper gate passed. Upstream strict Clippy was run separately below. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode engine-check --engine both --case C08-composed --seed 7` | 0 | Both program variants matched the interpreter on each engine. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode affine --case C08-alias-mutant` | 1 | Expected `FAIL CandidatePrecondition(WriteDenied)`. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode query --case C09-slice-fusion \| z3 -in -smt2` with Bash `pipefail` | 0 | Separate Z3 process returned `unsat`. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode evidence --engine both --output-root target/a02-v7/evidence-probe` | 1 | `NOT_RUN CANONICAL_PROTOCOLS_MISSING`. |
+| `test ! -e target/a02-v7/evidence-probe` | 0 | Evidence directory absent. |
 | `git diff --check` | 0 | Tracked diff whitespace check. |
 
-Tests exercised solver replay on the installed Z3. Hyperfine availability was confirmed. Publication measurements remain NOT_RUN. Upstream Cargo commands were NOT_RUN because the separate repository has missing declared sources and is outside this work order's writable scope.
+Workflow YAML comparison, `bash -n`, ShellCheck and the existing source-policy body succeeded. The only workflow differences are the two locked dependency-fetch steps. Hosted CI for the changed paper source remains unverified in this session.
+
+## Independent Momiru checkout
+
+Each native command used `--manifest-path /home/morteza/research-a02/libraries/momiru/Cargo.toml --target-dir target/a02-v7/upstream`. The checkout remained clean.
+
+| Command with the above path flags | Exit | Result |
+| --- | ---: | --- |
+| `cargo test --offline --locked --test a02_borrowed_signed_views --test a02_general_injectivity --test a02_general_stepped_views --test a02_light_layout --test a02_stride_spacing` | 0 | 21 passed. |
+| `cargo check --offline --locked --all-targets --all-features` | 0 | Both modules and all registered targets compiled. |
+| `cargo clippy --offline --locked --all-targets --all-features -- -D warnings` | 101 | `clippy::too_many_arguments` on eight-argument `cpu_sgemm_primary_seed` in `src/momiru/tensor_light/aot.rs:1315`. |
+| `cargo test --offline --locked --features aot` | 0 | 85 unit tests, 21 integration tests and five doc tests passed. |
+| `cargo test --offline --locked --release --lib --all-features` | 0 | 85 unit tests passed. |
+
+The GitHub check-runs query for the library pin exited 1 with a connection error. Canonical evidence, engine timing and independent publication review remain `NOT_RUN`.

@@ -59,17 +59,33 @@ pub fn check(
     budget: usize,
     mode: Mode,
 ) -> Decision {
+    check_with_peers(input, storage, rule, &[], budget, mode)
+}
+
+pub fn check_with_peers(
+    input: &Layout,
+    storage: &[ValueBits],
+    rule: &Rewrite,
+    peers: &[Layout],
+    budget: usize,
+    mode: Mode,
+) -> Decision {
     if input.capacity != storage.len() {
         return reference_error(Fault::StorageExtent);
     }
     if mode == Mode::Manual && !manually_allowed(rule) {
         return decision(Status::Unsupported, Reason::NotOnManualAllowlist);
     }
-    let baseline = oracle::interpret(input, storage, &rule.reference, budget);
+    let baseline = oracle::interpret_with_peers(input, storage, &rule.reference, peers, budget);
     let model = if mode == Mode::FiniteOnly || mode == Mode::Manual {
         None
     } else {
-        Some(lower::compile(input, &rule.reference, budget))
+        Some(lower::compile_with_peers(
+            input,
+            &rule.reference,
+            peers,
+            budget,
+        ))
     };
     let expected = match reconcile(baseline, model, input, storage, mode != Mode::NoAddress) {
         Ok(value) => value,
@@ -81,11 +97,16 @@ pub fn check(
     if mode == Mode::NoAliasPrecondition {
         candidate_ops.retain(|op| *op != crate::ir::Op::RequireWritable);
     }
-    let candidate = oracle::interpret(input, storage, &candidate_ops, budget);
+    let candidate = oracle::interpret_with_peers(input, storage, &candidate_ops, peers, budget);
     let model = if mode == Mode::FiniteOnly || mode == Mode::Manual {
         None
     } else {
-        Some(lower::compile(input, &candidate_ops, budget))
+        Some(lower::compile_with_peers(
+            input,
+            &candidate_ops,
+            peers,
+            budget,
+        ))
     };
     let observed = match reconcile(candidate, model, input, storage, mode != Mode::NoAddress) {
         Ok(value) => value,

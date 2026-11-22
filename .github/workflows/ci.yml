@@ -34,6 +34,8 @@ jobs:
             !/**/legacy/
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
+      - name: Fetch the locked Momiru Git revision
+        run: cargo fetch --locked
       - name: Install Z3 for independent replay
         run: |
           sudo apt-get update
@@ -76,6 +78,8 @@ jobs:
             !/**/legacy/
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
+      - name: Fetch the locked Momiru Git revision
+        run: cargo fetch --locked
       - name: Install Z3 for release-mode solver tests
         run: |
           sudo apt-get update

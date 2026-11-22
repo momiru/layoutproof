@@ -59,14 +59,59 @@ impl Lowered {
 }
 
 pub fn compile(layout: &Layout, ops: &[Op], alias_budget: usize) -> Result<Lowered, Fault> {
-    let size = validate(layout)?;
+    compile_with_peers(layout, ops, &[], alias_budget)
+}
+
+/// Lower in the presence of declared live regions. An exclusive lease must
+/// be disjoint from every other live region in the same allocation.
+pub fn compile_with_peers(
+    layout: &Layout,
+    ops: &[Op],
+    peers: &[Layout],
+    mut alias_budget: usize,
+) -> Result<Lowered, Fault> {
+    let (size, span) = validate(layout)?;
     if layout.permission == Permission::Exclusive {
         unique(layout, size, alias_budget)?;
+    }
+    let mut input_offsets = None;
+    for peer in peers.iter().filter(|peer| peer.storage == layout.storage) {
+        if peer.capacity != layout.capacity {
+            return Err(Fault::StorageExtent);
+        }
+        let (peer_size, peer_span) = validate(peer)?;
+        let (Some((first, last)), Some((peer_first, peer_last))) = (span, peer_span) else {
+            continue;
+        };
+        if (layout.permission == Permission::ReadOnly && peer.permission == Permission::ReadOnly)
+            || last < peer_first
+            || peer_last < first
+        {
+            continue;
+        }
+        if input_offsets.is_none() {
+            charge_alias(layout, size, &mut alias_budget)?;
+            input_offsets = Some(
+                (0..size)
+                    .map(|flat| address(layout, &coordinate(&layout.shape, flat)).map(|a| a.offset))
+                    .collect::<Result<HashSet<_>, _>>()?,
+            );
+        }
+        charge_alias(peer, peer_size, &mut alias_budget)?;
+        let offsets = input_offsets
+            .as_ref()
+            .expect("input offsets were collected");
+        for flat in 0..peer_size {
+            if offsets.contains(&address(peer, &coordinate(&peer.shape, flat))?.offset) {
+                return Err(Fault::LivePeerOverlap);
+            }
+        }
     }
     let mut out = layout.clone();
     canonicalize(&mut out);
     let mut stages = vec![out.shape.clone()];
-    let mut used_storage = HashSet::from([out.storage]);
+    let mut used_storage: HashSet<_> = peers.iter().map(|peer| peer.storage).collect();
+    used_storage.insert(out.storage);
     for op in ops {
         if let Op::Materialize(storage) = op {
             if !used_storage.insert(*storage) {
@@ -98,14 +143,24 @@ fn canonicalize(layout: &mut Layout) {
     }
 }
 
-fn validate(layout: &Layout) -> Result<usize, Fault> {
+fn charge_alias(layout: &Layout, size: usize, remaining: &mut usize) -> Result<(), Fault> {
+    let cost = size
+        .checked_mul(layout.shape.len().max(1))
+        .ok_or(Fault::WorkLimit)?;
+    *remaining = remaining.checked_sub(cost).ok_or(Fault::WorkLimit)?;
+    Ok(())
+}
+
+type Span = Option<(usize, usize)>;
+
+fn validate(layout: &Layout) -> Result<(usize, Span), Fault> {
     if layout.shape.len() != layout.strides.len() {
         return Err(Fault::RankMismatch);
     }
     let size = cardinality(&layout.shape)?;
     if size == 0 {
         if (0..=layout.capacity as i128).contains(&i128::from(layout.origin)) {
-            return Ok(0);
+            return Ok((0, None));
         }
         return Err(Fault::Bounds);
     }
@@ -120,7 +175,7 @@ fn validate(layout: &Layout) -> Result<usize, Fault> {
     if low < 0 || high >= layout.capacity as i128 || high > i128::from(i64::MAX) {
         return Err(Fault::Bounds);
     }
-    Ok(size)
+    Ok((size, Some((low as usize, high as usize))))
 }
 
 fn unique(layout: &Layout, size: usize, budget: usize) -> Result<(), Fault> {

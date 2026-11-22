@@ -6,8 +6,15 @@ rust-version = "1.99.1"
 license = "MIT"
 repository = "https://github.com/momiru/layoutproof"
 readme = "README.md"
+publish = false
 description = "A02 research verifier for signed-strided tensor layout rewrites"
 include = ["/src/**", "/adapters/**", "/tests/**", "/docs/a02/**", "/build.rs", "/README.md", "/LICENSE", "/.gitignore", "/rust-toolchain.toml"]
+
+[features]
+aot = ["momiru/aot"]
+
+[dependencies]
+momiru = { git = "https://github.com/taleblou/momiru.git", rev = "eba302d3c61313444b56303c8816f74a3aaf9679" }
 
 [[bin]]
 name = "a02-layoutproof"

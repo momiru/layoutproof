@@ -11,6 +11,8 @@ pub enum AddressDecision {
     ShapeMismatch,
     StorageMismatch,
     Witness(Vec<usize>),
+    CandidateUndefined(Fault),
+    NotCompared,
 }
 
 /// Decide equality of validated affine output addresses, including storage
@@ -21,7 +23,11 @@ pub fn affine_addresses(
     budget: usize,
 ) -> Result<AddressDecision, Fault> {
     let left = compile(input, &rewrite.reference, budget)?;
-    let right = compile(input, &rewrite.candidate, budget)?;
+    let right = match compile(input, &rewrite.candidate, budget) {
+        Ok(plan) => plan,
+        Err(Fault::WorkLimit) => return Err(Fault::WorkLimit),
+        Err(fault) => return Ok(AddressDecision::CandidateUndefined(fault)),
+    };
     compare_addresses(left.output(), right.output())
 }
 
@@ -98,8 +104,8 @@ fn matches_slice_fusion(rule: &Rewrite) -> bool {
         [Op::Slice {
             axis: a,
             start: x,
+            count: count1,
             step: s,
-            ..
         }, Op::Slice {
             axis: b,
             start: y,
@@ -119,9 +125,8 @@ fn matches_slice_fusion(rule: &Rewrite) -> bool {
     a == b
         && b == c
         && n == m
-        && *n != 0
-        && *s != 0
-        && *t != 0
+        && nonempty_slice_extent(*x, *count1, *s).is_some()
+        && nonempty_slice_extent(*y, *n, *t).is_some_and(|need| need <= *count1)
         && i128::from(*s)
             .checked_mul(*y as i128)
             .and_then(|p| p.checked_add(*x as i128))
@@ -129,40 +134,60 @@ fn matches_slice_fusion(rule: &Rewrite) -> bool {
         && s.checked_mul(*t) == Some(*u)
 }
 
+fn nonempty_slice_extent(start: usize, count: usize, step: i64) -> Option<usize> {
+    if step == 0 {
+        return None;
+    }
+    let last = (count.checked_sub(1)? as i128)
+        .checked_mul(i128::from(step))?
+        .checked_add(start as i128)?;
+    start.max(usize::try_from(last).ok()?).checked_add(1)
+}
+
 /// Independent binding of a certificate to the typed program, followed by a
 /// separately generated integer obligation for the affected coordinates.
 pub fn replay_query(cert: &Certificate) -> Option<String> {
     use Op::*;
-    let (variables, assumptions, conclusion) = match (cert.law, cert.rewrite.reference.as_slice(), cert.rewrite.candidate.as_slice()) {
+    let (variables, reference, candidate, obligation, binding) = match (
+        cert.law, cert.rewrite.reference.as_slice(), cert.rewrite.candidate.as_slice()
+    ) {
         (Law::FlipInvolution, [Flip(a), Flip(b)], []) if a == b => (
-            "n i", "(and (<= 0 i) (< i n))".to_owned(),
-            "(let ((j (- n 1 i))) (and (<= 0 j) (< j n) (= (- n 1 j) i)))".to_owned(),
+            "r n i", format!("(and (< {a} r) (<= 0 n))"), "true".to_owned(),
+            "(=> (and (<= 0 i) (< i n)) (let ((j (- n 1 i))) (and (<= 0 j) (< j n) (= (- n 1 j) i))))".to_owned(),
+            "true".to_owned(),
         ),
         (Law::TransposeInvolution, [Transpose { first: a, second: b }, Transpose { first: c, second: d }], [])
             if (*c == *a && *d == *b) || (*c == *b && *d == *a) => (
-            "m n i j", "(and (<= 0 i) (< i m) (<= 0 j) (< j n))".to_owned(),
-            "(let ((out0 j) (out1 i)) (and (<= 0 out0) (< out0 n) (<= 0 out1) (< out1 m) (= out1 i) (= out0 j)))".to_owned(),
+            "r m n i j", format!("(and (< {a} r) (< {b} r) (<= 0 m) (<= 0 n))"), "true".to_owned(),
+            "(=> (and (<= 0 i) (< i m) (<= 0 j) (< j n)) (let ((out0 j) (out1 i)) (and (<= 0 out0) (< out0 n) (<= 0 out1) (< out1 m) (= out1 i) (= out0 j))))".to_owned(),
+            "true".to_owned(),
         ),
         (Law::ExpandThenSqueeze, [Expand(a), Squeeze(b)], []) if a == b => (
-            "i j", "(and (<= 0 i) (<= 0 j) (< j 1))".to_owned(),
-            "(and (= j 0) (= (+ i j) i))".to_owned(),
+            "r i j", format!("(and (<= {a} r) (< r {}))", usize::MAX), "true".to_owned(),
+            "(=> (and (<= 0 i) (<= 0 j) (< j 1)) (and (= j 0) (= (+ i j) i)))".to_owned(),
+            "true".to_owned(),
         ),
         (Law::SliceFusion,
             [Slice { axis: a, start: x, count: count1, step: s },
              Slice { axis: b, start: y, count: count2, step: t }],
             [Slice { axis: c, start: z, count: count3, step: u }])
-            if a == b && b == c && count2 == count3 && *count2 > 0 && *s != 0 && *t != 0 && *u != 0 => {
+            if a == b && b == c && count2 == count3 && *u != 0
+                && nonempty_slice_extent(*x, *count1, *s).is_some()
+                && nonempty_slice_extent(*y, *count2, *t).is_some_and(|need| need <= *count1) => {
                 let (s, t, u) = (smt_int(*s), smt_int(*t), smt_int(*u));
-                // Check slope even for singleton output, so the certificate
-                // format doesn't accept arbitrary irrelevant coefficients.
                 let nested = |i: &str| format!("(+ {x} (* {s} (+ {y} (* {t} {i}))))");
                 let fused = |i: &str| format!("(+ {z} (* {u} {i}))");
-                let domain = format!("(and (<= 0 i) (< i {count2}) (<= 0 j) (< j {count1}) (<= 0 p) (< p n))");
+                let first = slice_domain("n", *x, *count1 - 1, &s);
+                let second = slice_domain(&count1.to_string(), *y, *count2 - 1, &t);
+                let candidate = slice_domain("n", *z, *count3 - 1, &u);
                 (
-                    "n i",
-                    format!("(let ((j (+ {y} (* {t} i))) (p {})) {domain})", nested("i")),
-                    format!("(and (= {} {}) (= {} {}) (= {} {}))",
-                        nested("i"), fused("i"), nested("0"), fused("0"), nested("1"), fused("1")),
+                    "r n i",
+                    format!("(and (< {a} r) (<= 0 n) (<= n {}) {first} {second})", usize::MAX),
+                    format!("(and (< {c} r) {candidate})"),
+                    format!("(=> (and (<= 0 i) (< i {count2})) (and (= {} {}) (<= 0 {}) (< {} n)))",
+                        nested("i"), fused("i"), fused("i"), fused("i")),
+                    format!("(and (= {} {}) (= {} {}))",
+                        nested("0"), fused("0"), nested("1"), fused("1")),
                 )
             }
         _ => return None,
@@ -171,17 +196,16 @@ pub fn replay_query(cert: &Certificate) -> Option<String> {
     for var in variables.split_whitespace() {
         query.push_str(&format!("(declare-const {var} Int)\n"));
     }
-    // Slice arithmetic identity is checked even when its reference domain is
-    // empty. This prevents an impossible slice from masking a corrupt binding.
-    if cert.law == Law::SliceFusion {
-        query.push_str(&format!("(assert (not {conclusion}))\n"));
-    } else {
-        query.push_str(&format!(
-            "(assert {assumptions})\n(assert (not {conclusion}))\n"
-        ));
-    }
-    query.push_str("(check-sat)\n");
+    // A directed rewrite is required to be defined whenever the reference is
+    // defined. The converse is deliberately outside this claim.
+    query.push_str(&format!(
+        "(assert (and (<= 0 r) (<= r {})))\n(define-fun reference-defined () Bool {reference})\n(define-fun candidate-defined () Bool {candidate})\n(assert (not (and {binding} (=> reference-defined (and candidate-defined {obligation})))))\n(check-sat)\n", usize::MAX
+    ));
     Some(query)
+}
+
+fn slice_domain(extent: &str, start: usize, last_index: usize, step: &str) -> String {
+    format!("(let ((last (+ {start} (* {step} {last_index})))) (and (< {start} {extent}) (<= 0 last) (< last {extent})))")
 }
 
 fn smt_int(n: i64) -> String {
@@ -203,6 +227,8 @@ pub enum ReplayReason {
     SolverError,
     SolverDisagrees,
     DifferentDomains,
+    ReferencePrecondition(Fault),
+    CandidatePrecondition(Fault),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,6 +237,7 @@ pub struct Replay {
     pub reason: ReplayReason,
 }
 
+/// Replay the conditional law. Use replay_on_layout for a concrete decision.
 pub fn replay(cert: &Certificate, timeout_ms: u32) -> Replay {
     let Some(query) = replay_query(cert) else {
         return Replay {
@@ -219,6 +246,40 @@ pub fn replay(cert: &Certificate, timeout_ms: u32) -> Replay {
         };
     };
     run_z3(&query, timeout_ms)
+}
+
+/// Check the applicability of a conditional certificate to a concrete input
+/// before replay. Callers supply the same live regions for both alternatives.
+pub fn replay_on_layout(
+    cert: &Certificate,
+    input: &Layout,
+    peers: &[Layout],
+    budget: usize,
+    timeout_ms: u32,
+) -> Replay {
+    use crate::lower::compile_with_peers;
+    for (ops, is_reference) in [
+        (&cert.rewrite.reference, true),
+        (&cert.rewrite.candidate, false),
+    ] {
+        if let Err(fault) = compile_with_peers(input, ops, peers, budget) {
+            return Replay {
+                status: if fault == Fault::WorkLimit {
+                    Status::Unknown
+                } else if is_reference {
+                    Status::Rejected
+                } else {
+                    Status::Fail
+                },
+                reason: if is_reference {
+                    ReplayReason::ReferencePrecondition(fault)
+                } else {
+                    ReplayReason::CandidatePrecondition(fault)
+                },
+            };
+        }
+    }
+    replay(cert, timeout_ms)
 }
 
 fn run_z3(query: &str, timeout_ms: u32) -> Replay {
@@ -309,9 +370,31 @@ pub fn replay_fixed(
     use std::fmt::Write as _;
 
     let observed_left = interpret(input, storage, &rewrite.reference, budget)?;
-    let observed_right = interpret(input, storage, &rewrite.candidate, budget)?;
     let left = compile(input, &rewrite.reference, budget)?;
-    let right = compile(input, &rewrite.candidate, budget)?;
+    let interpreted = interpret(input, storage, &rewrite.candidate, budget);
+    let compiled = compile(input, &rewrite.candidate, budget);
+    let (observed_right, right) = match (interpreted, compiled) {
+        (Ok(observed), Ok(plan)) => (observed, plan),
+        (Err(Fault::WorkLimit), _) | (_, Err(Fault::WorkLimit)) => return Err(Fault::WorkLimit),
+        (Err(a), Err(b)) if a == b => {
+            return Ok(FixedReplay {
+                addresses: AddressDecision::CandidateUndefined(a),
+                solver: Replay {
+                    status: Status::Fail,
+                    reason: ReplayReason::CandidatePrecondition(a),
+                },
+            })
+        }
+        _ => {
+            return Ok(FixedReplay {
+                addresses: AddressDecision::NotCompared,
+                solver: Replay {
+                    status: Status::Error,
+                    reason: ReplayReason::SolverDisagrees,
+                },
+            })
+        }
+    };
     let (left, right) = (left.output(), right.output());
     let addresses = compare_addresses(left, right)?;
     let replay = |status, reason| FixedReplay {

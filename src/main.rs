@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use momiru_layoutproof::{
+    adapters::a02_momiru::{self, Engine},
     cases::{self, BUDGET},
     ir::{Fault, Status},
     lower, proof,
@@ -11,7 +12,7 @@ use std::{hint::black_box, path::PathBuf, process::ExitCode, time::Instant};
 const HELP: &str = "\
 a02-layoutproof [--paper A02] [--engine model|general|light|both]
     [--device cpu] [--case CASE_ID] [--seed N]
-    [--mode check|finite|manual|no-address|no-alias|symbolic|query|affine|bench|evidence]
+    [--mode check|finite|manual|no-address|no-alias|symbolic|query|affine|engine-check|bench|evidence]
     [--samples N] [--warmup N] [--timeout-ms N] [--output-root PATH]
     [--help | --version | --list]
 
@@ -91,8 +92,14 @@ fn run(args: Args) -> Result<bool, String> {
         println!("UNSUPPORTED DEVICE");
         return Ok(false);
     }
+    if args.mode == "engine-check" {
+        return run_engines(&args);
+    }
     if args.engine != "model" {
-        println!("UNSUPPORTED ENGINE_LINKAGE dependency=DEPENDENCY_DIRTY_UNVERIFIED");
+        println!(
+            "UNSUPPORTED ENGINE_LINKAGE_IN_MODE mode={} use=engine-check",
+            args.mode
+        );
         return Ok(false);
     }
     let case =
@@ -141,7 +148,7 @@ fn run(args: Args) -> Result<bool, String> {
                 print!("{query}");
                 return Ok(true);
             }
-            let result = proof::replay(&cert, args.timeout_ms);
+            let result = proof::replay_on_layout(&cert, &case.layout, &[], BUDGET, args.timeout_ms);
             println!(
                 "{} {:?} case={}",
                 result.status.code(),
@@ -194,6 +201,40 @@ fn run(args: Args) -> Result<bool, String> {
         println!("{phase} {} ns", elapsed.as_nanos());
     }
     Ok(true)
+}
+
+fn run_engines(args: &Args) -> Result<bool, String> {
+    let case =
+        cases::get(&args.case, args.seed).ok_or_else(|| format!("unknown case {}", args.case))?;
+    let engines: &[_] = match args.engine.as_str() {
+        "general" => &[Engine::General],
+        "light" => &[Engine::Light],
+        "both" => &[Engine::General, Engine::Light],
+        _ => return Err("engine-check requires --engine general, light or both".into()),
+    };
+    let mut passed = true;
+    for &engine in engines {
+        for (variant, ops) in [
+            ("reference", &case.rewrite.reference),
+            ("candidate", &case.rewrite.candidate),
+        ] {
+            let result =
+                a02_momiru::check_read_only(engine, &case.layout, &case.storage, ops, BUDGET);
+            let (status, reason) = match result {
+                Ok(_) => (Status::Pass, "MatchesInterpreter".into()),
+                Err(error) => (error.status(), format!("{error:?}")),
+            };
+            println!(
+                "{} {reason} engine={engine:?} variant={variant} case={} seed={} momiru={}",
+                status.code(),
+                args.case,
+                args.seed,
+                a02_momiru::REVISION
+            );
+            passed &= status == Status::Pass;
+        }
+    }
+    Ok(passed)
 }
 
 fn bench(
