@@ -1,10 +1,11 @@
 //! Checked affine lowering. The interpreter uses coordinate substitution instead.
 
-use crate::ir::{cardinality, Address, Fault, Layout, Op, Permission};
-use std::collections::{BTreeMap, HashSet};
+use crate::ir::{cardinality, Address, Fault, Layout, Op, Permission, StorageId};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub struct Lowered {
     pub(crate) output: Layout,
+    pub(crate) allocations: HashMap<StorageId, usize>,
     stages: Vec<Vec<usize>>,
     ops: Vec<Op>,
 }
@@ -68,7 +69,17 @@ pub fn compile_with_peers(
     layout: &Layout,
     ops: &[Op],
     peers: &[Layout],
+    alias_budget: usize,
+) -> Result<Lowered, Fault> {
+    compile_in_context(layout, ops, peers, alias_budget, true)
+}
+
+pub(crate) fn compile_in_context(
+    layout: &Layout,
+    ops: &[Op],
+    peers: &[Layout],
     mut alias_budget: usize,
+    check_peer_overlap: bool,
 ) -> Result<Lowered, Fault> {
     let (size, span) = validate(layout)?;
     if layout.permission == Permission::Exclusive {
@@ -87,7 +98,7 @@ pub fn compile_with_peers(
         if peer.permission == Permission::Exclusive {
             unique(peer, peer_size, &mut alias_budget)?;
         }
-        if !same_storage {
+        if !same_storage || !check_peer_overlap {
             continue;
         }
         let (Some((first, last)), Some((peer_first, peer_last))) = (span, peer_span) else {
@@ -120,21 +131,26 @@ pub fn compile_with_peers(
     let mut out = layout.clone();
     canonicalize(&mut out);
     let mut stages = vec![out.shape.clone()];
-    let mut used_storage: HashSet<_> = peers.iter().map(|peer| peer.storage).collect();
-    used_storage.insert(out.storage);
+    let mut reserved: HashSet<_> = peers.iter().map(|peer| peer.storage).collect();
+    reserved.insert(out.storage);
+    let mut allocations = HashMap::new();
     for op in ops {
         if let Op::Materialize(storage) = op {
-            if !used_storage.insert(*storage) {
+            if !reserved.insert(*storage) {
                 return Err(Fault::StorageReuse);
             }
         }
         apply(&mut out, op)?;
         canonicalize(&mut out);
         validate(&out)?;
+        if let Op::Materialize(storage) = op {
+            allocations.insert(*storage, out.capacity);
+        }
         stages.push(out.shape.clone());
     }
     Ok(Lowered {
         output: out,
+        allocations,
         stages,
         ops: ops.to_vec(),
     })

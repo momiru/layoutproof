@@ -251,10 +251,18 @@ fn light_slice(
         .ok_or(invalid)?;
     let end = if step < 0 {
         last.checked_sub(1)
+    } else if last + 1 == n {
+        None
     } else {
         Some(last + 1)
     };
-    let endpoint = |i| isize::try_from(i).map_err(|_| EngineError::Unrepresentable);
+    let endpoint = |coordinate: usize| {
+        // Light accepts negative endpoints relative to the axis length.
+        // Prefer the absolute form when both encodings fit.
+        isize::try_from(coordinate)
+            .or_else(|_| isize::try_from(coordinate as i128 - n as i128))
+            .map_err(|_| EngineError::Unrepresentable)
+    };
     Ok(SignedSliceSpec::new(
         Some(endpoint(start)?),
         end.map(endpoint).transpose()?,

@@ -152,10 +152,17 @@ fn nonempty_slice_extent(start: usize, count: usize, step: i64) -> Option<usize>
     start.max(usize::try_from(last).ok()?).checked_add(1)
 }
 
+/// Upper rank bound from the signed byte limit for the layout's separate
+/// shape and stride vectors. Available memory may impose a smaller bound.
+pub const MAX_LAYOUT_RANK: usize = (isize::MAX as usize)
+    / if size_of::<usize>() > size_of::<i64>() {
+        size_of::<usize>()
+    } else {
+        size_of::<i64>()
+    };
+
 fn has_representable_axis(axis: usize) -> bool {
-    // A live axis needs rank >= axis + 1. Expansion also needs that
-    // representable output rank even when the input ends at the insertion.
-    axis.checked_add(1).is_some()
+    axis < MAX_LAYOUT_RANK
 }
 
 /// Independent binding of a certificate to the typed program, followed by a
@@ -178,7 +185,7 @@ pub fn replay_query(cert: &Certificate) -> Option<String> {
             "true".to_owned(),
         ),
         (Law::ExpandThenSqueeze, [Expand(a), Squeeze(b)], []) if a == b && has_representable_axis(*a) => (
-            "r i j", format!("(and (<= {a} r) (< r {}))", usize::MAX), "true".to_owned(),
+            "r i j", format!("(and (<= {a} r) (< r {MAX_LAYOUT_RANK}))"), "true".to_owned(),
             "(=> (and (<= 0 i) (<= 0 j) (< j 1)) (and (= j 0) (= (+ i j) i)))".to_owned(),
             "true".to_owned(),
         ),
@@ -214,7 +221,7 @@ pub fn replay_query(cert: &Certificate) -> Option<String> {
     // A directed rewrite is required to be defined whenever the reference is
     // defined. The converse is deliberately outside this claim.
     query.push_str(&format!(
-        "(assert (and (<= 0 r) (<= r {})))\n(define-fun reference-defined () Bool {reference})\n(define-fun candidate-defined () Bool {candidate})\n(assert (not (and {binding} (=> reference-defined (and candidate-defined {obligation})))))\n(check-sat)\n", usize::MAX
+        "(assert (and (<= 0 r) (<= r {MAX_LAYOUT_RANK})))\n(define-fun reference-defined () Bool {reference})\n(define-fun candidate-defined () Bool {candidate})\n(assert (not (and {binding} (=> reference-defined (and candidate-defined {obligation})))))\n(check-sat)\n"
     ));
     Some(query)
 }

@@ -1,7 +1,7 @@
 //! Bounded interpreter that moves cells by logical indexing, never lowering strides.
 
-use crate::ir::{Address, Fault, Layout, Op, Permission, ValueBits};
-use std::collections::HashSet;
+use crate::ir::{Address, Fault, Layout, Op, Permission, StorageId, ValueBits};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cell {
@@ -14,7 +14,8 @@ pub struct Cell {
 pub struct Observation {
     pub shape: Vec<usize>,
     pub cells: Vec<Cell>,
-    pub storage: crate::ir::StorageId,
+    pub storage: StorageId,
+    pub(crate) allocations: HashMap<StorageId, usize>,
     pub permission: Permission,
 }
 
@@ -81,7 +82,18 @@ pub fn interpret_with_peers(
     storage: &[ValueBits],
     ops: &[Op],
     peers: &[Layout],
+    budget: usize,
+) -> Result<Observation, Fault> {
+    interpret_in_context(layout, storage, ops, peers, budget, true)
+}
+
+pub(crate) fn interpret_in_context(
+    layout: &Layout,
+    storage: &[ValueBits],
+    ops: &[Op],
+    peers: &[Layout],
     mut budget: usize,
+    check_peer_overlap: bool,
 ) -> Result<Observation, Fault> {
     if layout.capacity != storage.len() {
         return Err(Fault::StorageExtent);
@@ -98,6 +110,7 @@ pub fn interpret_with_peers(
     let mut obs = Observation {
         shape: layout.shape.clone(),
         cells: Vec::new(),
+        allocations: HashMap::new(),
         permission: layout.permission,
         storage: layout.storage,
     };
@@ -136,7 +149,8 @@ pub fn interpret_with_peers(
             return Err(Fault::Bounds);
         }
         let exclusive = peer.permission == Permission::Exclusive;
-        let writes = layout.permission == Permission::Exclusive || exclusive;
+        let writes =
+            check_peer_overlap && (layout.permission == Permission::Exclusive || exclusive);
         let mut overlaps = false;
         let mut duplicates = false;
         let mut peer_offsets = HashSet::new();
@@ -299,6 +313,7 @@ fn apply(obs: &mut Observation, op: &Op, remaining: &mut usize) -> Result<(), Fa
         Op::Materialize(storage) => {
             charge(old, remaining)?;
             obs.storage = *storage;
+            obs.allocations.insert(*storage, obs.cells.len());
             obs.permission = Permission::Exclusive;
             for (offset, cell) in obs.cells.iter_mut().enumerate() {
                 cell.address = Address {

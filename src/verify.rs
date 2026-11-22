@@ -8,6 +8,8 @@ pub enum Mode {
     Full,
     NoAddress,
     NoAliasPrecondition,
+    /// Model-only control. Keep write assertions and ignore cross-view overlap.
+    NoLivePeerCheck,
     FiniteOnly,
     Manual,
 }
@@ -20,6 +22,7 @@ pub enum Reason {
     LoweringDisagrees,
     Shape,
     Permission,
+    AllocationState,
     Logical(Vec<usize>),
     Value(Vec<usize>),
     Address(Vec<usize>),
@@ -76,15 +79,24 @@ pub fn check_with_peers(
     if mode == Mode::Manual && !manually_allowed(rule) {
         return decision(Status::Unsupported, Reason::NotOnManualAllowlist);
     }
-    let baseline = oracle::interpret_with_peers(input, storage, &rule.reference, peers, budget);
+    let check_peer_overlap = mode != Mode::NoLivePeerCheck;
+    let baseline = oracle::interpret_in_context(
+        input,
+        storage,
+        &rule.reference,
+        peers,
+        budget,
+        check_peer_overlap,
+    );
     let model = if mode == Mode::FiniteOnly || mode == Mode::Manual {
         None
     } else {
-        Some(lower::compile_with_peers(
+        Some(lower::compile_in_context(
             input,
             &rule.reference,
             peers,
             budget,
+            check_peer_overlap,
         ))
     };
     let expected = match reconcile(baseline, model, input, storage, mode != Mode::NoAddress) {
@@ -97,15 +109,23 @@ pub fn check_with_peers(
     if mode == Mode::NoAliasPrecondition {
         candidate_ops.retain(|op| *op != crate::ir::Op::RequireWritable);
     }
-    let candidate = oracle::interpret_with_peers(input, storage, &candidate_ops, peers, budget);
+    let candidate = oracle::interpret_in_context(
+        input,
+        storage,
+        &candidate_ops,
+        peers,
+        budget,
+        check_peer_overlap,
+    );
     let model = if mode == Mode::FiniteOnly || mode == Mode::Manual {
         None
     } else {
-        Some(lower::compile_with_peers(
+        Some(lower::compile_in_context(
             input,
             &candidate_ops,
             peers,
             budget,
+            check_peer_overlap,
         ))
     };
     let observed = match reconcile(candidate, model, input, storage, mode != Mode::NoAddress) {
@@ -124,6 +144,11 @@ pub fn check_with_peers(
     }
     if mode != Mode::NoAddress && expected.storage != observed.storage {
         return decision(Status::Fail, Reason::Address(Vec::new()));
+    }
+
+    // Allocation IDs and extents remain visible to continuation programs.
+    if mode != Mode::NoAddress && expected.allocations != observed.allocations {
+        return decision(Status::Fail, Reason::AllocationState);
     }
 
     // Choose the first witness in row-major order. Report value before logical
@@ -172,6 +197,7 @@ fn reconcile(
         (Ok(obs), Ok(plan))
             if obs.shape == plan.output.shape
                 && obs.permission == plan.output.permission
+                && obs.allocations == plan.allocations
                 && (!compare_address || obs.storage == plan.output.storage) =>
         {
             let mut flat = 0;
