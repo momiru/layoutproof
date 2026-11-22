@@ -38,3 +38,33 @@ Each native command used `--manifest-path /home/morteza/research-a02/libraries/m
 | `cargo test --offline --locked --release --lib --all-features` | 0 | 85 unit tests passed. |
 
 The GitHub check-runs query for the library pin exited 1 with a connection error. Canonical evidence, engine timing and independent publication review remain `NOT_RUN`.
+
+## Follow-up at paper HEAD f33bda2
+
+The pinned dependency was unchanged. This run rebuilt into fresh ignored directories under `target/a02-paper-r2`. Paper commands used `CARGO_HOME="$PWD/target/a02-v7/cargo-home"` and `CARGO_TARGET_DIR="$PWD/target/a02-paper-r2/paper"`. Rust and Cargo 1.99.1 and Z3 4.8.12 were used.
+
+| Paper command | Exit | Observation |
+| --- | ---: | --- |
+| `cargo test --offline --locked --test a02_proof_admission` | 101 → 0 | Two failures reproduced before correction. Three tests passed afterward. |
+| `cargo fmt --all -- --check` | 0 | Formatting passed. |
+| `cargo check --offline --locked --all-targets --all-features` | 0 | Check passed. |
+| `cargo test --offline --locked --all-targets --all-features --quiet` | 0 | 36 passed. |
+| `cargo test --offline --locked --release --all-targets --all-features --quiet` | 0 | 36 passed. |
+| `cargo clippy --offline --locked --all-targets --all-features -- -D warnings` | 0 | Paper Clippy passed. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode engine-check --engine both --case C08-composed` | 0 | Both native engines admitted the composition. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode engine-check --engine both --case C08-address-witness` | 1 | Both engines reported a failing rewrite, although each variant matched its own oracle. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode affine --case C08-materialize-mutant` | 1 | FAIL with a storage mismatch. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode query --case C09-slice-fusion \| z3 -in -smt2` with Bash `pipefail` | 0 | `unsat` for the encoded directed obligation. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode symbolic --case C09-slice-fusion --timeout-ms 0` | 1 | `UNKNOWN Budget`. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode evidence --engine both` | 1 | `NOT_RUN CANONICAL_PROTOCOLS_MISSING`. |
+| `git diff --check` | 0 | Passed. |
+
+For Momiru, append `--manifest-path /home/morteza/research-a02/libraries/momiru/Cargo.toml --target-dir target/a02-paper-r2/upstream` to the Cargo commands below.
+
+| Momiru command | Exit | Observation |
+| --- | ---: | --- |
+| `cargo check --offline --locked --all-targets --all-features` | 0 | All 30 registered targets discovered and checked. |
+| `cargo test --offline --locked --features aot --quiet` | 0 | 111 tests passed across unit, integration and doc suites. |
+| `cargo clippy --offline --locked --all-targets --all-features -- -D warnings` | 101 | Reproduced the upstream eight-argument AOT lint at `src/momiru/tensor_light/aot.rs:1315`. |
+
+The GitHub check-runs request for the Momiru pin exited 1 because the API was unreachable. Hosted CI and canonical evidence were unverified. Native timing comparisons were NOT_RUN.

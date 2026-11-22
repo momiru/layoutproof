@@ -76,7 +76,7 @@ pub struct Certificate {
 pub fn certify(rewrite: &Rewrite) -> Option<Certificate> {
     use Op::*;
     let law = match (rewrite.reference.as_slice(), rewrite.candidate.as_slice()) {
-        ([Flip(a), Flip(b)], []) if a == b => Law::FlipInvolution,
+        ([Flip(a), Flip(b)], []) if a == b && has_representable_axis(*a) => Law::FlipInvolution,
         (
             [Transpose {
                 first: a,
@@ -86,8 +86,15 @@ pub fn certify(rewrite: &Rewrite) -> Option<Certificate> {
                 second: d,
             }],
             [],
-        ) if (a, b) == (c, d) || (a, b) == (d, c) => Law::TransposeInvolution,
-        ([Expand(a), Squeeze(b)], []) if a == b => Law::ExpandThenSqueeze,
+        ) if has_representable_axis(*a)
+            && has_representable_axis(*b)
+            && ((a, b) == (c, d) || (a, b) == (d, c)) =>
+        {
+            Law::TransposeInvolution
+        }
+        ([Expand(a), Squeeze(b)], []) if a == b && has_representable_axis(*a) => {
+            Law::ExpandThenSqueeze
+        }
         ([Slice { .. }, Slice { .. }], [Slice { .. }]) if matches_slice_fusion(rewrite) => {
             Law::SliceFusion
         }
@@ -122,7 +129,8 @@ fn matches_slice_fusion(rule: &Rewrite) -> bool {
     else {
         return false;
     };
-    a == b
+    has_representable_axis(*a)
+        && a == b
         && b == c
         && n == m
         && nonempty_slice_extent(*x, *count1, *s).is_some()
@@ -144,6 +152,12 @@ fn nonempty_slice_extent(start: usize, count: usize, step: i64) -> Option<usize>
     start.max(usize::try_from(last).ok()?).checked_add(1)
 }
 
+fn has_representable_axis(axis: usize) -> bool {
+    // A live axis needs rank >= axis + 1. Expansion also needs that
+    // representable output rank even when the input ends at the insertion.
+    axis.checked_add(1).is_some()
+}
+
 /// Independent binding of a certificate to the typed program, followed by a
 /// separately generated integer obligation for the affected coordinates.
 pub fn replay_query(cert: &Certificate) -> Option<String> {
@@ -151,18 +165,19 @@ pub fn replay_query(cert: &Certificate) -> Option<String> {
     let (variables, reference, candidate, obligation, binding) = match (
         cert.law, cert.rewrite.reference.as_slice(), cert.rewrite.candidate.as_slice()
     ) {
-        (Law::FlipInvolution, [Flip(a), Flip(b)], []) if a == b => (
+        (Law::FlipInvolution, [Flip(a), Flip(b)], []) if a == b && has_representable_axis(*a) => (
             "r n i", format!("(and (< {a} r) (<= 0 n))"), "true".to_owned(),
             "(=> (and (<= 0 i) (< i n)) (let ((j (- n 1 i))) (and (<= 0 j) (< j n) (= (- n 1 j) i))))".to_owned(),
             "true".to_owned(),
         ),
         (Law::TransposeInvolution, [Transpose { first: a, second: b }, Transpose { first: c, second: d }], [])
-            if (*c == *a && *d == *b) || (*c == *b && *d == *a) => (
+            if has_representable_axis(*a) && has_representable_axis(*b)
+                && ((*c == *a && *d == *b) || (*c == *b && *d == *a)) => (
             "r m n i j", format!("(and (< {a} r) (< {b} r) (<= 0 m) (<= 0 n))"), "true".to_owned(),
             "(=> (and (<= 0 i) (< i m) (<= 0 j) (< j n)) (let ((out0 j) (out1 i)) (and (<= 0 out0) (< out0 n) (<= 0 out1) (< out1 m) (= out1 i) (= out0 j))))".to_owned(),
             "true".to_owned(),
         ),
-        (Law::ExpandThenSqueeze, [Expand(a), Squeeze(b)], []) if a == b => (
+        (Law::ExpandThenSqueeze, [Expand(a), Squeeze(b)], []) if a == b && has_representable_axis(*a) => (
             "r i j", format!("(and (<= {a} r) (< r {}))", usize::MAX), "true".to_owned(),
             "(=> (and (<= 0 i) (<= 0 j) (< j 1)) (and (= j 0) (= (+ i j) i)))".to_owned(),
             "true".to_owned(),
@@ -171,7 +186,7 @@ pub fn replay_query(cert: &Certificate) -> Option<String> {
             [Slice { axis: a, start: x, count: count1, step: s },
              Slice { axis: b, start: y, count: count2, step: t }],
             [Slice { axis: c, start: z, count: count3, step: u }])
-            if a == b && b == c && count2 == count3 && *u != 0
+            if has_representable_axis(*a) && a == b && b == c && count2 == count3 && *u != 0
                 && nonempty_slice_extent(*x, *count1, *s).is_some()
                 && nonempty_slice_extent(*y, *count2, *t).is_some_and(|need| need <= *count1) => {
                 let (s, t, u) = (smt_int(*s), smt_int(*t), smt_int(*u));
@@ -227,6 +242,7 @@ pub enum ReplayReason {
     SolverError,
     SolverDisagrees,
     DifferentDomains,
+    DifferentStorage,
     ReferencePrecondition(Fault),
     CandidatePrecondition(Fault),
 }
@@ -366,14 +382,45 @@ pub fn replay_fixed(
     budget: usize,
     timeout_ms: u32,
 ) -> Result<FixedReplay, Fault> {
-    use crate::oracle::{interpret, visit};
+    replay_fixed_with_peers(input, storage, rewrite, &[], budget, timeout_ms)
+}
+
+/// Check concrete address equivalence under the supplied live-peer context.
+pub fn replay_fixed_with_peers(
+    input: &Layout,
+    storage: &[crate::ir::ValueBits],
+    rewrite: &Rewrite,
+    peers: &[Layout],
+    budget: usize,
+    timeout_ms: u32,
+) -> Result<FixedReplay, Fault> {
+    use crate::lower::compile_with_peers;
+    use crate::oracle::{interpret_with_peers, visit};
     use std::fmt::Write as _;
 
-    let observed_left = interpret(input, storage, &rewrite.reference, budget)?;
-    let left = compile(input, &rewrite.reference, budget)?;
-    let interpreted = interpret(input, storage, &rewrite.candidate, budget);
-    let compiled = compile(input, &rewrite.candidate, budget);
-    let (observed_right, right) = match (interpreted, compiled) {
+    if input.capacity != storage.len() {
+        return Err(Fault::StorageExtent);
+    }
+    let evaluate = |ops: &[Op]| {
+        (
+            interpret_with_peers(input, storage, ops, peers, budget),
+            compile_with_peers(input, ops, peers, budget),
+        )
+    };
+    let disagreement = || FixedReplay {
+        addresses: AddressDecision::NotCompared,
+        solver: Replay {
+            status: Status::Error,
+            reason: ReplayReason::SolverDisagrees,
+        },
+    };
+    let (observed_left, left) = match evaluate(&rewrite.reference) {
+        (Ok(observed), Ok(plan)) => (observed, plan),
+        (Err(Fault::WorkLimit), _) | (_, Err(Fault::WorkLimit)) => return Err(Fault::WorkLimit),
+        (Err(a), Err(b)) if a == b => return Err(a),
+        _ => return Ok(disagreement()),
+    };
+    let (observed_right, right) = match evaluate(&rewrite.candidate) {
         (Ok(observed), Ok(plan)) => (observed, plan),
         (Err(Fault::WorkLimit), _) | (_, Err(Fault::WorkLimit)) => return Err(Fault::WorkLimit),
         (Err(a), Err(b)) if a == b => {
@@ -385,15 +432,7 @@ pub fn replay_fixed(
                 },
             })
         }
-        _ => {
-            return Ok(FixedReplay {
-                addresses: AddressDecision::NotCompared,
-                solver: Replay {
-                    status: Status::Error,
-                    reason: ReplayReason::SolverDisagrees,
-                },
-            })
-        }
+        _ => return Ok(disagreement()),
     };
     let (left, right) = (left.output(), right.output());
     let addresses = compare_addresses(left, right)?;
@@ -408,10 +447,11 @@ pub fn replay_fixed(
     {
         return Ok(replay(Status::Error, ReplayReason::SolverDisagrees));
     }
-    if observed_left.shape != observed_right.shape
-        || observed_left.storage != observed_right.storage
-    {
-        return Ok(replay(Status::Unsupported, ReplayReason::DifferentDomains));
+    if observed_left.shape != observed_right.shape {
+        return Ok(replay(Status::Fail, ReplayReason::DifferentDomains));
+    }
+    if observed_left.storage != observed_right.storage {
+        return Ok(replay(Status::Fail, ReplayReason::DifferentStorage));
     }
     let mut flat = 0;
     let mut exact = AddressDecision::Equal;

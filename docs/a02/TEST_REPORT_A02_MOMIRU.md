@@ -11,3 +11,7 @@ The paper passed 27 tests in debug and release with all features. Existing tests
 | P0/P1 live engine validation | The pinned General and Light implementations matched the independent interpreter on the shared signed-view tests. Tests compare addresses relative to each backing slice, exact FP32 payloads, and actual mutable post-state. Light rank nine is unsupported, and both native engines reject non-forward-contiguous reshape that the abstract model accepts. |
 
 Solver replay establishes the encoded conditional arithmetic obligations and concrete address witnesses. Scientific evidence collection, measured engine comparison, cross-language conformance and end-to-end theorem validation remain outside this test report. Exact commands and the independent upstream Clippy failure are recorded in the [build log](BUILD_LOG_A02_MOMIRU.md).
+
+## Follow-up at paper HEAD f33bda2
+
+Fresh debug and release runs each passed 36 tests. The six admission regressions cover distinction between per-variant agreement and rewrite acceptance, explicit oracle preflight provenance, direct native negative inputs, large unsigned empty slicing, and malformed exclusive peer rejection. The three follow-up proof tests reject impossible rank guards for all four registered law families, refute fixed equivalence on independently observed shape and storage differences, and check declared live peers in fixed replay before starting Z3. [Fresh validation commands](BUILD_LOG_A02_MOMIRU.md)

@@ -11,3 +11,10 @@
 | `README.md`, `docs/a02/README.md`, `docs/a02/APPLICABILITY_MATRIX.tsv`, `docs/a02/AUDIT_A02_MOMIRU.md`, `docs/a02/BUILD_LOG_A02_MOMIRU.md`, `docs/a02/TEST_REPORT_A02_MOMIRU.md`, `docs/a02/HANDOFF_A02_MOMIRU.md`, `docs/a02/PATCH_MANIFEST_A02_MOMIRU.md` | Scope, reproduction, validation and evidence blockers. |
 
 `docs/a02/LIBRARY_SOURCE_PIN.txt` already had a local orchestrator update to the exact dependency revision when this work began. It was preserved.
+
+
+## Follow-up proof admission
+
+- `src/proof.rs` rejects certificates with impossible rank guards, reports observed shape and storage mismatches as failures, and adds concrete replay with explicit live peers.
+- `tests/a02_proof_admission.rs` covers those corrections without modifying the existing tests.
+- `README.md` and `docs/a02/{README,BUILD_LOG_A02_MOMIRU,TEST_REPORT_A02_MOMIRU,PATCH_MANIFEST_A02_MOMIRU}.md` describe the current admission paths and validation.
