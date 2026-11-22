@@ -131,12 +131,15 @@ pub(crate) fn interpret_in_context(
     if layout.permission == Permission::Exclusive && offsets.len() != obs.cells.len() {
         return Err(Fault::WriteOverlap);
     }
+    let mut live = HashMap::new();
+    let mut subject = LiveOffsets::new(layout.capacity);
+    subject.record(offsets, layout.permission, check_peer_overlap);
+    live.insert(layout.storage, subject);
     for peer in peers {
-        let same_storage = peer.storage == layout.storage;
-        if !same_storage && peer.permission == Permission::ReadOnly {
-            continue;
-        }
-        if same_storage && peer.capacity != layout.capacity {
+        let group = live
+            .entry(peer.storage)
+            .or_insert_with(|| LiveOffsets::new(peer.capacity));
+        if group.capacity != peer.capacity {
             return Err(Fault::StorageExtent);
         }
         if peer.shape.len() != peer.strides.len() {
@@ -148,27 +151,21 @@ pub(crate) fn interpret_in_context(
         {
             return Err(Fault::Bounds);
         }
-        let exclusive = peer.permission == Permission::Exclusive;
-        let writes =
-            check_peer_overlap && (layout.permission == Permission::Exclusive || exclusive);
-        let mut overlaps = false;
-        let mut duplicates = false;
         let mut peer_offsets = HashSet::new();
+        let mut duplicates = false;
         visit(&peer.shape, |index| {
-            let offset = input_offset(peer, index)?;
-            duplicates |= exclusive && !peer_offsets.insert(offset);
-            overlaps |= same_storage && writes && offsets.contains(&offset);
+            duplicates |= !peer_offsets.insert(input_offset(peer, index)?);
             Ok(())
         })?;
-        if duplicates {
+        if peer.permission == Permission::Exclusive && duplicates {
             return Err(Fault::WriteOverlap);
         }
-        if overlaps {
+        if check_peer_overlap && group.conflicts(&peer_offsets, peer.permission) {
             return Err(Fault::LivePeerOverlap);
         }
+        group.record(peer_offsets, peer.permission, check_peer_overlap);
     }
-    let mut used_storage: HashSet<_> = peers.iter().map(|peer| peer.storage).collect();
-    used_storage.insert(obs.storage);
+    let mut used_storage: HashSet<_> = live.into_keys().collect();
     for op in ops {
         if let Op::Materialize(storage) = op {
             if !used_storage.insert(*storage) {
@@ -178,6 +175,41 @@ pub(crate) fn interpret_in_context(
         apply(&mut obs, op, &mut budget)?;
     }
     Ok(obs)
+}
+
+// Build offset unions per allocation, independently of the lowerer's
+// pairwise span exclusions and comparisons.
+struct LiveOffsets {
+    capacity: usize,
+    any: HashSet<usize>,
+    writers: HashSet<usize>,
+}
+
+impl LiveOffsets {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            any: HashSet::new(),
+            writers: HashSet::new(),
+        }
+    }
+
+    fn conflicts(&self, offsets: &HashSet<usize>, permission: Permission) -> bool {
+        let occupied = match permission {
+            Permission::Exclusive => &self.any,
+            Permission::ReadOnly => &self.writers,
+        };
+        !offsets.is_disjoint(occupied)
+    }
+
+    fn record(&mut self, offsets: HashSet<usize>, permission: Permission, enabled: bool) {
+        if enabled {
+            if permission == Permission::Exclusive {
+                self.writers.extend(offsets.iter().copied());
+            }
+            self.any.extend(offsets);
+        }
+    }
 }
 
 fn input_offset(layout: &Layout, index: &[usize]) -> Result<usize, Fault> {

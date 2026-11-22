@@ -68,3 +68,33 @@ For Momiru, append `--manifest-path /home/morteza/research-a02/libraries/momiru/
 | `cargo clippy --offline --locked --all-targets --all-features -- -D warnings` | 101 | Reproduced the upstream eight-argument AOT lint at `src/momiru/tensor_light/aot.rs:1315`. |
 
 The GitHub check-runs request for the Momiru pin exited 1 because the API was unreachable. Hosted CI and canonical evidence were unverified. Native timing comparisons were NOT_RUN.
+
+## Full live-context validation at paper HEAD 8f9e75f
+
+Paper commands used `CARGO_HOME="$PWD/target/a02-v7/cargo-home"` and `CARGO_TARGET_DIR="$PWD/target/a02-paper-final/paper"`. The dependency remained pinned at `eba302d3c61313444b56303c8816f74a3aaf9679`.
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `cargo test --offline --locked --test a02_live_context` | 101 → 0 | Reproduced admission of conflicting peers before the fix. All three tests passed afterward. |
+| `cargo fmt --all -- --check` | 0 | Passed. |
+| `cargo check --offline --locked --all-targets --all-features` | 0 | Passed. |
+| `cargo test --offline --locked --all-targets --all-features --quiet` | 0 | 43 tests passed. |
+| `cargo test --offline --locked --release --all-targets --all-features --quiet` | 0 | 43 tests passed. |
+| `cargo clippy --offline --locked --all-targets --all-features -- -D warnings` | 0 | Passed for the paper crate. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode engine-check --engine both --case C08-composed` | 0 | Both native engines admitted the rewrite. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode engine-check --engine both --case C08-address-witness` | 1 | Both native engines reported a failing rewrite. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode query --case C09-slice-fusion \| z3 -in -smt2` with Bash `pipefail` | 0 | `unsat` for the emitted arithmetic obligation. |
+| `z3 -in -smt2` for the independently encoded overlap of offsets `2+a` and `3-b` on `0 <= a,b < 2` | 0 | `sat`, with `a=1` and `b=0` both reaching offset 3. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode symbolic --case C09-slice-fusion --timeout-ms 0` | 1 | `UNKNOWN Budget`. |
+| `cargo run --quiet --offline --locked --bin a02-layoutproof -- --mode evidence --engine both` | 1 | `NOT_RUN CANONICAL_PROTOCOLS_MISSING`. |
+| `git diff --check` | 0 | Passed. |
+
+The upstream commands used `--manifest-path /home/morteza/research-a02/libraries/momiru/Cargo.toml --target-dir target/a02-paper-final/upstream`. The upstream checkout remained clean.
+
+| Upstream command with the above path flags | Exit | Observed result |
+| --- | ---: | --- |
+| `cargo check --offline --locked --all-targets --all-features` | 0 | Passed. |
+| `cargo test --offline --locked --features aot --quiet` | 0 | 111 tests passed across unit, integration, and doc suites. |
+| `cargo clippy --offline --locked --all-targets --all-features -- -D warnings` | 101 | Reproduced `clippy::too_many_arguments` on `cpu_sgemm_primary_seed`. |
+
+The GitHub API query for the pinned revision exited 1 with a connection error. Hosted CI remains unverified. Canonical performance runs remain `NOT_RUN`.

@@ -18,3 +18,11 @@
 - `src/proof.rs` rejects certificates with impossible rank guards, reports observed shape and storage mismatches as failures, and adds concrete replay with explicit live peers.
 - `tests/a02_proof_admission.rs` covers those corrections without modifying the existing tests.
 - `README.md` and `docs/a02/{README,BUILD_LOG_A02_MOMIRU,TEST_REPORT_A02_MOMIRU,PATCH_MANIFEST_A02_MOMIRU}.md` describe the current admission paths and validation.
+
+
+## Complete live-context checking
+
+- `src/lower.rs` validates all supplied regions with bounded pairwise span and offset checks.
+- `src/oracle.rs` independently validates the same environment using per-allocation address sets.
+- `tests/a02_live_context.rs` covers conflicts outside the subject, capacity mismatches, shared readers, disjoint writers and budget exhaustion.
+- The A02 scope, test report, and build log record the revised verification and unchanged evidence blockers.

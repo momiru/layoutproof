@@ -81,58 +81,36 @@ pub(crate) fn compile_in_context(
     mut alias_budget: usize,
     check_peer_overlap: bool,
 ) -> Result<Lowered, Fault> {
-    let (size, span) = validate(layout)?;
-    if layout.permission == Permission::Exclusive {
-        unique(layout, size, &mut alias_budget)?;
-    }
-    let mut input_offsets = None;
-    for peer in peers {
-        let same_storage = peer.storage == layout.storage;
-        if !same_storage && peer.permission == Permission::ReadOnly {
-            continue;
-        }
-        if same_storage && peer.capacity != layout.capacity {
+    let mut live: HashMap<StorageId, Vec<LiveRegion<'_>>> = HashMap::new();
+    for region in std::iter::once(layout).chain(peers) {
+        let group = live.entry(region.storage).or_default();
+        if group
+            .first()
+            .is_some_and(|first| first.layout.capacity != region.capacity)
+        {
             return Err(Fault::StorageExtent);
         }
-        let (peer_size, peer_span) = validate(peer)?;
-        if peer.permission == Permission::Exclusive {
-            unique(peer, peer_size, &mut alias_budget)?;
+        let (size, span) = validate(region)?;
+        if region.permission == Permission::Exclusive {
+            unique(region, size, &mut alias_budget)?;
         }
-        if !same_storage || !check_peer_overlap {
-            continue;
-        }
-        let (Some((first, last)), Some((peer_first, peer_last))) = (span, peer_span) else {
-            continue;
+        let mut current = LiveRegion {
+            layout: region,
+            size,
+            span,
+            offsets: None,
         };
-        if (layout.permission == Permission::ReadOnly && peer.permission == Permission::ReadOnly)
-            || last < peer_first
-            || peer_last < first
-        {
-            continue;
-        }
-        if input_offsets.is_none() {
-            charge_alias(layout, size, &mut alias_budget)?;
-            input_offsets = Some(
-                (0..size)
-                    .map(|flat| address(layout, &coordinate(&layout.shape, flat)).map(|a| a.offset))
-                    .collect::<Result<HashSet<_>, _>>()?,
-            );
-        }
-        charge_alias(peer, peer_size, &mut alias_budget)?;
-        let offsets = input_offsets
-            .as_ref()
-            .expect("input offsets were collected");
-        for flat in 0..peer_size {
-            if offsets.contains(&address(peer, &coordinate(&peer.shape, flat))?.offset) {
-                return Err(Fault::LivePeerOverlap);
+        if check_peer_overlap {
+            for previous in group.iter_mut() {
+                previous.check_disjoint(&mut current, &mut alias_budget)?;
             }
         }
+        group.push(current);
     }
     let mut out = layout.clone();
     canonicalize(&mut out);
     let mut stages = vec![out.shape.clone()];
-    let mut reserved: HashSet<_> = peers.iter().map(|peer| peer.storage).collect();
-    reserved.insert(out.storage);
+    let mut reserved: HashSet<_> = live.into_keys().collect();
     let mut allocations = HashMap::new();
     for op in ops {
         if let Op::Materialize(storage) = op {
@@ -178,6 +156,54 @@ fn charge_alias(layout: &Layout, size: usize, remaining: &mut usize) -> Result<(
 }
 
 type Span = Option<(usize, usize)>;
+
+struct LiveRegion<'a> {
+    layout: &'a Layout,
+    size: usize,
+    span: Span,
+    offsets: Option<HashSet<usize>>,
+}
+
+impl LiveRegion<'_> {
+    fn check_disjoint(&mut self, other: &mut Self, budget: &mut usize) -> Result<(), Fault> {
+        *budget = budget.checked_sub(1).ok_or(Fault::WorkLimit)?;
+        if self.layout.permission == Permission::ReadOnly
+            && other.layout.permission == Permission::ReadOnly
+        {
+            return Ok(());
+        }
+        let (Some((start, end)), Some((other_start, other_end))) = (self.span, other.span) else {
+            return Ok(());
+        };
+        if end < other_start || other_end < start {
+            return Ok(());
+        }
+        let left = self.offsets(budget)?;
+        let right = other.offsets(budget)?;
+        *budget = budget
+            .checked_sub(left.len().min(right.len()))
+            .ok_or(Fault::WorkLimit)?;
+        if !left.is_disjoint(right) {
+            return Err(Fault::LivePeerOverlap);
+        }
+        Ok(())
+    }
+
+    fn offsets(&mut self, budget: &mut usize) -> Result<&HashSet<usize>, Fault> {
+        if self.offsets.is_none() {
+            charge_alias(self.layout, self.size, budget)?;
+            self.offsets = Some(
+                (0..self.size)
+                    .map(|flat| {
+                        address(self.layout, &coordinate(&self.layout.shape, flat))
+                            .map(|point| point.offset)
+                    })
+                    .collect::<Result<_, _>>()?,
+            );
+        }
+        Ok(self.offsets.as_ref().expect("offsets were collected"))
+    }
+}
 
 fn validate(layout: &Layout) -> Result<(usize, Span), Fault> {
     if layout.shape.len() != layout.strides.len() {

@@ -15,3 +15,9 @@ Solver replay establishes the encoded conditional arithmetic obligations and con
 ## Follow-up at paper HEAD f33bda2
 
 Fresh debug and release runs each passed 36 tests. The six admission regressions cover distinction between per-variant agreement and rewrite acceptance, explicit oracle preflight provenance, direct native negative inputs, large unsigned empty slicing, and malformed exclusive peer rejection. The three follow-up proof tests reject impossible rank guards for all four registered law families, refute fixed equivalence on independently observed shape and storage differences, and check declared live peers in fixed replay before starting Z3. [Fresh validation commands](BUILD_LOG_A02_MOMIRU.md)
+
+## Full live-context regression at paper HEAD 8f9e75f
+
+On the previous source, an exclusive signed-stride peer and a shared peer could overlap away from the subject and still pass both model checks. The new regression rejects this configuration whether the conflicting peers share the subject's allocation or occupy a separate allocation. Both implementations accept disjoint interleaved writers and overlapping readers. Capacity disagreement remains a rejection in the overlap ablation, and exhausted verification returns `UNKNOWN`.
+
+Fresh debug and release runs each passed 43 tests. The native engine checks and proof replay ran separately from the live-context regression. [Commands and statuses](BUILD_LOG_A02_MOMIRU.md)
