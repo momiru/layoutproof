@@ -1,13 +1,18 @@
 #![forbid(unsafe_code)]
 
 use momiru_layoutproof::{
-    adapters::a02_momiru::{self, Engine},
+    adapters::a02_momiru::{self, Engine, NativeObservation},
     cases::{self, BUDGET},
     ir::{Fault, Status},
     lower, proof,
     verify::{self, Mode},
 };
-use std::{hint::black_box, path::PathBuf, process::ExitCode, time::Instant};
+use std::{
+    hint::black_box,
+    path::PathBuf,
+    process::ExitCode,
+    time::{Duration, Instant},
+};
 
 const HELP: &str = "\
 a02-layoutproof [--paper A02] [--engine model|general|light|both]
@@ -16,7 +21,7 @@ a02-layoutproof [--paper A02] [--engine model|general|light|both]
     [--samples N] [--warmup N] [--timeout-ms N] [--output-root PATH]
     [--help | --version | --list]
 
-bench runs a local, allocation-inclusive lowering diagnostic.
+bench runs a local, allocation-inclusive model or native CPU diagnostic.
 evidence checks admission for a canonical research run.";
 
 struct Args {
@@ -92,7 +97,7 @@ fn run(args: Args) -> Result<bool, String> {
         println!("UNSUPPORTED DEVICE");
         return Ok(false);
     }
-    if args.mode == "engine-check" {
+    if args.mode == "engine-check" || (args.mode == "bench" && args.engine != "model") {
         return run_engines(&args);
     }
     if args.engine != "model" {
@@ -178,11 +183,18 @@ fn run(args: Args) -> Result<bool, String> {
         println!("NOT_RUN CORRECTNESS_GATE");
         return Ok(false);
     }
-    let samples = bench(&case, args.warmup, args.samples)?;
+    let samples = bench_model(&case, args.warmup, args.samples)?;
     let after = verify::check(&case.layout, &case.storage, &case.rewrite, BUDGET, mode);
     if !after.eligible(mode) {
         return Err("post-run correctness check failed".into());
     }
+    print_timing_provenance();
+    println!("CPU allocation-inclusive lowering, single process, plan drop excluded.");
+    print_samples(&samples, args.warmup);
+    Ok(true)
+}
+
+fn print_timing_provenance() {
     println!(
         "Development timing only. Package {}. {}. {}-{}. Profile assertions: {}.",
         env!("CARGO_PKG_VERSION"),
@@ -191,16 +203,17 @@ fn run(args: Args) -> Result<bool, String> {
         std::env::consts::OS,
         cfg!(debug_assertions),
     );
-    println!("CPU allocation-inclusive lowering, single process, plan drop excluded.");
+}
+
+fn print_samples(samples: &[Duration], warmup: u32) {
     for (i, elapsed) in samples.iter().enumerate() {
-        let phase = if i < args.warmup as usize {
+        let phase = if i < warmup as usize {
             "warmup"
         } else {
             "sample"
         };
         println!("{phase} {} ns", elapsed.as_nanos());
     }
-    Ok(true)
 }
 
 fn run_engines(args: &Args) -> Result<bool, String> {
@@ -219,7 +232,7 @@ fn run_engines(args: &Args) -> Result<bool, String> {
         BUDGET,
         Mode::Full,
     );
-    let mut passed = true;
+    let mut admitted = Vec::with_capacity(engines.len());
     for &engine in engines {
         let [reference, candidate] = [
             ("reference", &case.rewrite.reference),
@@ -246,16 +259,18 @@ fn run_engines(args: &Args) -> Result<bool, String> {
         // Each variant may match its own oracle even when the rewrite is
         // unsound. Admission requires both the full model verdict and equality
         // of the observations returned by the selected native engine.
-        let (status, reason) = if !rewrite.eligible(Mode::Full) {
-            (rewrite.status, format!("Model({:?})", rewrite.reason))
+        let (status, reason, observation) = if !rewrite.eligible(Mode::Full) {
+            (rewrite.status, format!("Model({:?})", rewrite.reason), None)
         } else {
             match (reference, candidate) {
-                (Ok(reference), Ok(candidate)) if reference == candidate => {
-                    (Status::Pass, "EquivalentObservations".into())
-                }
-                (Ok(_), Ok(_)) => (Status::Fail, "ObservationMismatch".into()),
+                (Ok(reference), Ok(candidate)) if reference == candidate => (
+                    Status::Pass,
+                    "EquivalentObservations".into(),
+                    Some(candidate),
+                ),
+                (Ok(_), Ok(_)) => (Status::Fail, "ObservationMismatch".into(), None),
                 (Err(error), _) | (_, Err(error)) => {
-                    (error.status(), format!("Variant({error:?})"))
+                    (error.status(), format!("Variant({error:?})"), None)
                 }
             }
         };
@@ -266,16 +281,73 @@ fn run_engines(args: &Args) -> Result<bool, String> {
             args.seed,
             a02_momiru::REVISION
         );
-        passed &= status == Status::Pass;
+        if let Some(observation) = observation {
+            admitted.push((engine, observation));
+        }
     }
-    Ok(passed)
+    let passed = admitted.len() == engines.len();
+    if args.mode != "bench" {
+        return Ok(passed);
+    }
+    if !passed {
+        println!("NOT_RUN CORRECTNESS_GATE");
+        return Ok(false);
+    }
+
+    let backing: Vec<f32> = case.storage.iter().copied().map(f32::from_bits).collect();
+    let mut runs = Vec::with_capacity(admitted.len());
+    for (engine, expected) in &admitted {
+        runs.push((
+            *engine,
+            bench_native(args, &case, &backing, *engine, expected)?,
+        ));
+    }
+    print_timing_provenance();
+    println!("CPU allocation-inclusive native candidate view and observation, single process.");
+    println!("Backing initialization, oracle, sample comparison and output drop excluded.");
+    for (engine, samples) in runs {
+        println!(
+            "engine={engine:?} variant=candidate case={} seed={} momiru={}",
+            args.case,
+            args.seed,
+            a02_momiru::REVISION
+        );
+        print_samples(&samples, args.warmup);
+    }
+    Ok(true)
 }
 
-fn bench(
+fn bench_native(
+    args: &Args,
     case: &cases::Case,
-    warmup: u32,
-    samples: u32,
-) -> Result<Vec<std::time::Duration>, String> {
+    backing: &[f32],
+    engine: Engine,
+    expected: &NativeObservation,
+) -> Result<Vec<Duration>, String> {
+    (0..args.warmup + args.samples)
+        .map(|sample| {
+            let start = Instant::now();
+            let observed = a02_momiru::observe_read_only(
+                engine,
+                black_box(&case.layout),
+                black_box(backing),
+                black_box(&case.rewrite.candidate),
+                BUDGET,
+            );
+            let elapsed = start.elapsed();
+            let observed = observed
+                .map_err(|error| format!("{engine:?} sample {sample} failed: {error:?}"))?;
+            if black_box(&observed) != expected {
+                return Err(format!(
+                    "{engine:?} sample {sample} changed its observation"
+                ));
+            }
+            Ok(elapsed)
+        })
+        .collect()
+}
+
+fn bench_model(case: &cases::Case, warmup: u32, samples: u32) -> Result<Vec<Duration>, String> {
     (0..warmup + samples)
         .map(|_| {
             let start = Instant::now();

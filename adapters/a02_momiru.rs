@@ -382,12 +382,7 @@ pub fn check_read_only(
     ops: &[Op],
     budget: usize,
 ) -> Result<NativeObservation, EngineError> {
-    if ops
-        .iter()
-        .any(|op| matches!(op, Op::RequireWritable | Op::Materialize(_)))
-    {
-        return Err(EngineError::UnsupportedOperation);
-    }
+    require_borrowed_operations(ops)?;
     let layout = Layout {
         permission: Permission::ReadOnly,
         ..layout.clone()
@@ -395,23 +390,7 @@ pub fn check_read_only(
     let expected =
         oracle::interpret(&layout, data, ops, budget).map_err(EngineError::OraclePreflight)?;
     let backing: Vec<f32> = data.iter().copied().map(f32::from_bits).collect();
-    let (strides, origin) = signed_metadata(&layout, backing.len())?;
-    let observed = match engine {
-        Engine::General => {
-            let view = TensorView::new(&layout.shape, &strides, origin, &backing)
-                .map_err(EngineError::General)?;
-            general(view, &backing, ops, budget)?
-        }
-        Engine::Light => light_rank!(layout.shape.len(), R => {
-            let view = SignedTensorView::<R>::new(fixed(&layout.shape)?, fixed(&strides)?, origin, &backing)
-                .map_err(EngineError::Light)?;
-            let mut view = LightView::from(view);
-            for op in ops {
-                view = view.apply(op)?;
-            }
-            view.observe(&backing, budget)
-        })?,
-    };
+    let observed = observe_read_only(engine, &layout, &backing, ops, budget)?;
     if expected.shape != observed.shape {
         return Err(EngineError::ShapeMismatch);
     }
@@ -430,6 +409,46 @@ pub fn check_read_only(
         }
     }
     Ok(observed)
+}
+
+fn require_borrowed_operations(ops: &[Op]) -> Result<(), EngineError> {
+    if ops
+        .iter()
+        .any(|op| matches!(op, Op::RequireWritable | Op::Materialize(_)))
+    {
+        return Err(EngineError::UnsupportedOperation);
+    }
+    Ok(())
+}
+
+/// Run a shared borrow on the selected engine and collect its physical
+/// observations. The timed diagnostic checks these against an independently
+/// validated observation outside the measured interval.
+pub fn observe_read_only(
+    engine: Engine,
+    layout: &Layout,
+    backing: &[f32],
+    ops: &[Op],
+    budget: usize,
+) -> Result<NativeObservation, EngineError> {
+    require_borrowed_operations(ops)?;
+    let (strides, origin) = signed_metadata(layout, backing.len())?;
+    match engine {
+        Engine::General => {
+            let view = TensorView::new(&layout.shape, &strides, origin, backing)
+                .map_err(EngineError::General)?;
+            general(view, backing, ops, budget)
+        }
+        Engine::Light => light_rank!(layout.shape.len(), R => {
+            let view = SignedTensorView::<R>::new(fixed(&layout.shape)?, fixed(&strides)?, origin, backing)
+                .map_err(EngineError::Light)?;
+            let mut view = LightView::from(view);
+            for op in ops {
+                view = view.apply(op)?;
+            }
+            view.observe(backing, budget)
+        }),
+    }
 }
 
 /// Exercise the engine's native exclusive-view admission and indexed write.
