@@ -118,8 +118,12 @@ pub fn interpret_with_peers(
     if layout.permission == Permission::Exclusive && offsets.len() != obs.cells.len() {
         return Err(Fault::WriteOverlap);
     }
-    for peer in peers.iter().filter(|peer| peer.storage == layout.storage) {
-        if peer.capacity != layout.capacity {
+    for peer in peers {
+        let same_storage = peer.storage == layout.storage;
+        if !same_storage && peer.permission == Permission::ReadOnly {
+            continue;
+        }
+        if same_storage && peer.capacity != layout.capacity {
             return Err(Fault::StorageExtent);
         }
         if peer.shape.len() != peer.strides.len() {
@@ -131,14 +135,20 @@ pub fn interpret_with_peers(
         {
             return Err(Fault::Bounds);
         }
-        let writes =
-            layout.permission == Permission::Exclusive || peer.permission == Permission::Exclusive;
+        let exclusive = peer.permission == Permission::Exclusive;
+        let writes = layout.permission == Permission::Exclusive || exclusive;
         let mut overlaps = false;
+        let mut duplicates = false;
+        let mut peer_offsets = HashSet::new();
         visit(&peer.shape, |index| {
             let offset = input_offset(peer, index)?;
-            overlaps |= writes && offsets.contains(&offset);
+            duplicates |= exclusive && !peer_offsets.insert(offset);
+            overlaps |= same_storage && writes && offsets.contains(&offset);
             Ok(())
         })?;
+        if duplicates {
+            return Err(Fault::WriteOverlap);
+        }
         if overlaps {
             return Err(Fault::LivePeerOverlap);
         }

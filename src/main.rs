@@ -212,27 +212,61 @@ fn run_engines(args: &Args) -> Result<bool, String> {
         "both" => &[Engine::General, Engine::Light],
         _ => return Err("engine-check requires --engine general, light or both".into()),
     };
+    let rewrite = verify::check(
+        &case.layout,
+        &case.storage,
+        &case.rewrite,
+        BUDGET,
+        Mode::Full,
+    );
     let mut passed = true;
     for &engine in engines {
-        for (variant, ops) in [
+        let [reference, candidate] = [
             ("reference", &case.rewrite.reference),
             ("candidate", &case.rewrite.candidate),
-        ] {
+        ].map(|(variant, ops)| {
             let result =
                 a02_momiru::check_read_only(engine, &case.layout, &case.storage, ops, BUDGET);
-            let (status, reason) = match result {
-                Ok(_) => (Status::Pass, "MatchesInterpreter".into()),
-                Err(error) => (error.status(), format!("{error:?}")),
+            let (status, reason, origin) = match &result {
+                Ok(_) => (Status::Pass, "MatchesInterpreter".into(), "native-observation"),
+                Err(error @ a02_momiru::EngineError::OraclePreflight(_)) => {
+                    (error.status(), format!("{error:?}"), "oracle-preflight")
+                }
+                Err(error) => (error.status(), format!("{error:?}"), "engine-adapter"),
             };
             println!(
-                "{} {reason} engine={engine:?} variant={variant} case={} seed={} momiru={}",
+                "{} {reason} origin={origin} engine={engine:?} variant={variant} case={} seed={} momiru={}",
                 status.code(),
                 args.case,
                 args.seed,
                 a02_momiru::REVISION
             );
-            passed &= status == Status::Pass;
-        }
+            result
+        });
+        // Each variant may match its own oracle even when the rewrite is
+        // unsound. Admission requires both the full model verdict and equality
+        // of the observations returned by the selected native engine.
+        let (status, reason) = if !rewrite.eligible(Mode::Full) {
+            (rewrite.status, format!("Model({:?})", rewrite.reason))
+        } else {
+            match (reference, candidate) {
+                (Ok(reference), Ok(candidate)) if reference == candidate => {
+                    (Status::Pass, "EquivalentObservations".into())
+                }
+                (Ok(_), Ok(_)) => (Status::Fail, "ObservationMismatch".into()),
+                (Err(error), _) | (_, Err(error)) => {
+                    (error.status(), format!("Variant({error:?})"))
+                }
+            }
+        };
+        println!(
+            "{} NativeRewrite {reason} engine={engine:?} case={} seed={} momiru={}",
+            status.code(),
+            args.case,
+            args.seed,
+            a02_momiru::REVISION
+        );
+        passed &= status == Status::Pass;
     }
     Ok(passed)
 }

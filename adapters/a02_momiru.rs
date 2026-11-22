@@ -18,6 +18,8 @@ pub enum Engine {
 
 #[derive(Debug)]
 pub enum EngineError {
+    /// The interpreter rejected or exhausted its budget before native execution.
+    OraclePreflight(Fault),
     Model(Fault),
     General(momiru::tensor::TensorError),
     Light(momiru::tensor_light::TensorError),
@@ -37,8 +39,11 @@ impl EngineError {
             | Self::Unrepresentable
             | Self::General(momiru::tensor::TensorError::NonContiguous)
             | Self::Light(momiru::tensor_light::TensorError::NonContiguous) => Status::Unsupported,
-            Self::Model(Fault::WorkLimit) => Status::Unknown,
-            Self::Model(_)
+            Self::OraclePreflight(Fault::WorkLimit) | Self::Model(Fault::WorkLimit) => {
+                Status::Unknown
+            }
+            Self::OraclePreflight(_)
+            | Self::Model(_)
             | Self::General(momiru::tensor::TensorError::OverlappingMutableView)
             | Self::Light(momiru::tensor_light::TensorError::OverlappingMutableView) => {
                 Status::Rejected
@@ -232,21 +237,22 @@ fn light_slice(
     if step == 0 || start > n {
         return Err(invalid);
     }
+    if count == 0 {
+        // Equal native endpoints encode the empty domain without converting
+        // the original unsigned start, which has no reachable coordinate.
+        return Ok(SignedSliceSpec::new(Some(0), Some(0), 1));
+    }
     let step = isize::try_from(step).map_err(|_| EngineError::Unrepresentable)?;
-    let end = if count == 0 {
-        Some(start)
+    let last = (count as i128 - 1)
+        .checked_mul(step as i128)
+        .and_then(|delta| delta.checked_add(start as i128))
+        .and_then(|last| usize::try_from(last).ok())
+        .filter(|&last| last < n && start < n)
+        .ok_or(invalid)?;
+    let end = if step < 0 {
+        last.checked_sub(1)
     } else {
-        let last = (count as i128 - 1)
-            .checked_mul(step as i128)
-            .and_then(|delta| delta.checked_add(start as i128))
-            .and_then(|last| usize::try_from(last).ok())
-            .filter(|&last| last < n && start < n)
-            .ok_or(invalid)?;
-        if step < 0 {
-            last.checked_sub(1)
-        } else {
-            Some(last + 1)
-        }
+        Some(last + 1)
     };
     let endpoint = |i| isize::try_from(i).map_err(|_| EngineError::Unrepresentable);
     Ok(SignedSliceSpec::new(
@@ -378,7 +384,8 @@ pub fn check_read_only(
         permission: Permission::ReadOnly,
         ..layout.clone()
     };
-    let expected = oracle::interpret(&layout, data, ops, budget).map_err(EngineError::Model)?;
+    let expected =
+        oracle::interpret(&layout, data, ops, budget).map_err(EngineError::OraclePreflight)?;
     let backing: Vec<f32> = data.iter().copied().map(f32::from_bits).collect();
     let (strides, origin) = signed_metadata(&layout, backing.len())?;
     let observed = match engine {

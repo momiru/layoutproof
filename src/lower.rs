@@ -72,14 +72,24 @@ pub fn compile_with_peers(
 ) -> Result<Lowered, Fault> {
     let (size, span) = validate(layout)?;
     if layout.permission == Permission::Exclusive {
-        unique(layout, size, alias_budget)?;
+        unique(layout, size, &mut alias_budget)?;
     }
     let mut input_offsets = None;
-    for peer in peers.iter().filter(|peer| peer.storage == layout.storage) {
-        if peer.capacity != layout.capacity {
+    for peer in peers {
+        let same_storage = peer.storage == layout.storage;
+        if !same_storage && peer.permission == Permission::ReadOnly {
+            continue;
+        }
+        if same_storage && peer.capacity != layout.capacity {
             return Err(Fault::StorageExtent);
         }
         let (peer_size, peer_span) = validate(peer)?;
+        if peer.permission == Permission::Exclusive {
+            unique(peer, peer_size, &mut alias_budget)?;
+        }
+        if !same_storage {
+            continue;
+        }
         let (Some((first, last)), Some((peer_first, peer_last))) = (span, peer_span) else {
             continue;
         };
@@ -178,7 +188,7 @@ fn validate(layout: &Layout) -> Result<(usize, Span), Fault> {
     Ok((size, Some((low as usize, high as usize))))
 }
 
-fn unique(layout: &Layout, size: usize, budget: usize) -> Result<(), Fault> {
+fn unique(layout: &Layout, size: usize, budget: &mut usize) -> Result<(), Fault> {
     if size <= 1 {
         return Ok(());
     }
@@ -205,9 +215,7 @@ fn unique(layout: &Layout, size: usize, budget: usize) -> Result<(), Fault> {
     if separated {
         return Ok(());
     }
-    if size > budget {
-        return Err(Fault::WorkLimit);
-    }
+    charge_alias(layout, size, budget)?;
     let mut seen = HashSet::new();
     for flat in 0..size {
         if !seen.insert(address(layout, &coordinate(&layout.shape, flat))?.offset) {
