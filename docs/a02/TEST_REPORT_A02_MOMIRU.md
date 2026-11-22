@@ -21,3 +21,9 @@ Fresh debug and release runs each passed 36 tests. The six admission regressions
 On the previous source, an exclusive signed-stride peer and a shared peer could overlap away from the subject and still pass both model checks. The new regression rejects this configuration whether the conflicting peers share the subject's allocation or occupy a separate allocation. Both implementations accept disjoint interleaved writers and overlapping readers. Capacity disagreement remains a rejection in the overlap ablation, and exhausted verification returns `UNKNOWN`.
 
 Fresh debug and release runs each passed 43 tests. The native engine checks and proof replay ran separately from the live-context regression. [Commands and statuses](BUILD_LOG_A02_MOMIRU.md)
+
+## V11 terminal materialization
+
+The two new regression tests gather a signed, permuted and broadcast view with both pinned native engines, then pass the gathered values to each engine's public owned tensor constructor. They compare actual backing capacity, checked dense offsets, exact FP32 payloads, and disjoint backing ranges with the adapter's independent checks. Coverage includes empty and scalar outputs, General rank nine versus Light's rank limit, and rejection of reuse of the input storage ID. This path covers one terminal materialization. Borrowed rewrite and benchmark modes keep their existing scope.
+
+The paper passed 48 tests in each fresh debug and release run. Historical red-team regressions and the native benchmark admission checks ran with both profiles. [Exact commands and statuses](BUILD_LOG_A02_MOMIRU.md)

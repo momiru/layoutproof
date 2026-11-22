@@ -1,10 +1,10 @@
 //! Development checks against the independently implemented Momiru engines.
 
-use crate::ir::{cardinality, Fault, Layout, Op, Permission, Status, ValueBits};
+use crate::ir::{cardinality, Fault, Layout, Op, Permission, Status, StorageId, ValueBits};
 use crate::{lower, oracle};
-use momiru::tensor::{TensorView, TensorViewMut};
+use momiru::tensor::{Tensor as GeneralTensor, TensorView, TensorViewMut};
 use momiru::tensor_light::{
-    Rank, SignedSliceSpec, SignedTensorView, SignedTensorViewMut, ValidRank,
+    Rank, SignedSliceSpec, SignedTensorView, SignedTensorViewMut, Tensor as LightTensor, ValidRank,
 };
 use std::num::NonZeroIsize;
 
@@ -26,6 +26,11 @@ pub enum EngineError {
     UnsupportedRank(usize),
     UnsupportedOperation,
     Unrepresentable,
+    MaterializationAliasedInput,
+    MaterializationExtent {
+        expected: usize,
+        observed: usize,
+    },
     ShapeMismatch,
     AddressMismatch(Vec<usize>),
     ValueMismatch(Vec<usize>),
@@ -391,6 +396,14 @@ pub fn check_read_only(
         oracle::interpret(&layout, data, ops, budget).map_err(EngineError::OraclePreflight)?;
     let backing: Vec<f32> = data.iter().copied().map(f32::from_bits).collect();
     let observed = observe_read_only(engine, &layout, &backing, ops, budget)?;
+    compare_observation(&expected, &observed)?;
+    Ok(observed)
+}
+
+fn compare_observation(
+    expected: &oracle::Observation,
+    observed: &NativeObservation,
+) -> Result<(), EngineError> {
     if expected.shape != observed.shape {
         return Err(EngineError::ShapeMismatch);
     }
@@ -408,7 +421,70 @@ pub fn check_read_only(
             )));
         }
     }
+    Ok(())
+}
+
+/// Gather a native shared view into a new owned tensor of the same engine.
+/// The adapter supplies the logical-order gather and each engine constructs
+/// its own dense storage. Only a single terminal materialization is supported.
+pub fn check_materialization(
+    engine: Engine,
+    layout: &Layout,
+    backing: &[f32],
+    view_ops: &[Op],
+    destination: StorageId,
+    budget: usize,
+) -> Result<NativeObservation, EngineError> {
+    require_borrowed_operations(view_ops)?;
+    let layout = Layout {
+        permission: Permission::ReadOnly,
+        ..layout.clone()
+    };
+    let mut program = view_ops.to_vec();
+    program.push(Op::Materialize(destination));
+    let bits: Vec<_> = backing.iter().map(|value| value.to_bits()).collect();
+    let expected = oracle::interpret(&layout, &bits, &program, budget)
+        .map_err(EngineError::OraclePreflight)?;
+    let gathered = observe_read_only(engine, &layout, backing, view_ops, budget)?;
+    let values = gathered.values.into_iter().map(f32::from_bits).collect();
+    let observed = match engine {
+        Engine::General => {
+            let owned =
+                GeneralTensor::from_vec(&gathered.shape, values).map_err(EngineError::General)?;
+            check_owned_backing(backing, owned.as_slice(), expected.cells.len())?;
+            general(owned.view(), owned.as_slice(), &[], budget)?
+        }
+        Engine::Light => light_rank!(gathered.shape.len(), R => {
+            let owned = LightTensor::<R>::try_from_vec(fixed(&gathered.shape)?, values)
+                .map_err(EngineError::Light)?;
+            check_owned_backing(backing, owned.as_slice(), expected.cells.len())?;
+            let view = owned.signed_view().map_err(EngineError::Light)?;
+            observe_light(&view, owned.as_slice(), budget)
+        })?,
+    };
+    compare_observation(&expected, &observed)?;
     Ok(observed)
+}
+
+fn check_owned_backing(
+    source: &[f32],
+    owned: &[f32],
+    expected_extent: usize,
+) -> Result<(), EngineError> {
+    if owned.len() != expected_extent {
+        return Err(EngineError::MaterializationExtent {
+            expected: expected_extent,
+            observed: owned.len(),
+        });
+    }
+    if !source.is_empty() && !owned.is_empty() {
+        let source = source.as_ptr_range();
+        let owned = owned.as_ptr_range();
+        if source.start.addr() < owned.end.addr() && owned.start.addr() < source.end.addr() {
+            return Err(EngineError::MaterializationAliasedInput);
+        }
+    }
+    Ok(())
 }
 
 fn require_borrowed_operations(ops: &[Op]) -> Result<(), EngineError> {

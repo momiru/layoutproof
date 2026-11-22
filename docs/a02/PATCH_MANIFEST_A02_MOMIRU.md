@@ -26,3 +26,10 @@
 - `src/oracle.rs` independently validates the same environment using per-allocation address sets.
 - `tests/a02_live_context.rs` covers conflicts outside the subject, capacity mismatches, shared readers, disjoint writers and budget exhaustion.
 - The A02 scope, test report, and build log record the revised verification and unchanged evidence blockers.
+
+
+## V11 native materialization coverage
+
+- `adapters/a02_momiru.rs` adds terminal materialization through each engine's native view and owned constructor, with independent shape, bit-pattern, extent and storage-range checks.
+- `tests/a02_native_materialization.rs` covers signed and broadcast views, scalar and empty tensors, reserved storage IDs and the General/Light rank boundary.
+- `README.md` and `docs/a02/{README,BUILD_LOG_A02_MOMIRU,TEST_REPORT_A02_MOMIRU,PATCH_MANIFEST_A02_MOMIRU}.md` describe the native diagnostic boundaries and validation.

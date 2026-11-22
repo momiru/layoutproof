@@ -22,18 +22,18 @@ cargo run --offline --locked --bin a02-layoutproof -- --mode affine --case C08-c
 cargo run --offline --locked --bin a02-layoutproof -- --mode engine-check --engine both --case C08-composed
 ```
 
-The release runner supports allocation-inclusive development timings for cases that pass independent preflight and postflight correctness checks.
+The release runner supports allocation-inclusive development timings for cases that pass independent preflight and per-sample correctness checks. Use `--engine model` to time model lowering separately.
 
 ```sh
 cargo run --offline --locked --release --bin a02-layoutproof -- \
-  --paper A02 --engine model --case C08-composed --seed 7 --mode bench --warmup 3 --samples 10
+  --paper A02 --engine both --case C08-composed --seed 7 --mode bench --warmup 3 --samples 10
 ```
 
 For reproducibility, record the exact paper source state, including local changes, alongside the case ID, seed, compiler, Z3 version, host and command. The runner reports compiler and host target metadata with local timings. See [the A02 implementation and reproducibility notes](docs/a02/README.md).
 
 ## Scope and evidence
 
-The CPU model and live-engine checks are separate development modes. The native adapter calls Momiru General's runtime-rank FP32 views and Light's const-rank FP32 views through their public APIs. It compares engine shapes, backing addresses and exact payloads to the independent interpreter. Engine-check admits a rewrite only after both native variants agree and the model verifies logical lineage and permissions. Mutable-view regressions test alias rejection and actual write post-state. Light supports ranks zero through eight. General tests include ranks nine and sixteen. Native reshapes are limited to the engines' forward-contiguous view contracts. [Library source pin](docs/a02/LIBRARY_SOURCE_PIN.txt) · [Source audit](docs/a02/AUDIT_A02_MOMIRU.md)
+The CPU model and live-engine checks are separate development modes. The native adapter calls Momiru General's runtime-rank FP32 views and Light's const-rank FP32 views through their public APIs. It compares engine shapes, backing addresses and exact payloads to the independent interpreter. Engine-check admits a rewrite only after both native variants agree and the model verifies logical lineage and permissions. Mutable-view regressions test alias rejection and actual write post-state. Terminal materialization tests gather through the native view APIs, check the result of each engine's owned constructor against the interpreter, and verify nonempty source and destination storage are disjoint. Light supports ranks zero through eight. General tests include ranks nine and sixteen. Native reshapes are limited to the engines' forward-contiguous view contracts. [Library source pin](docs/a02/LIBRARY_SOURCE_PIN.txt) · [Source audit](docs/a02/AUDIT_A02_MOMIRU.md)
 
 Finite checks apply to the concrete input. Fixed-shape SMT replay checks address obligations for the supplied input. The symbolic certificates encode directed definedness for selected axis-local rules, and replay on a concrete layout checks both programs before invoking Z3. Writable lease checks cover supplied live peer regions. Device execution, arbitrary-program proof, and confirmatory engine comparisons remain outside the verified scope.
 

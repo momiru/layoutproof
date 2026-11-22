@@ -98,3 +98,34 @@ The upstream commands used `--manifest-path /home/morteza/research-a02/libraries
 | `cargo clippy --offline --locked --all-targets --all-features -- -D warnings` | 101 | Reproduced `clippy::too_many_arguments` on `cpu_sgemm_primary_seed`. |
 
 The GitHub API query for the pinned revision exited 1 with a connection error. Hosted CI remains unverified. Canonical performance runs remain `NOT_RUN`.
+
+## V11 native materialization at paper HEAD 70a9d15
+
+Fresh paper builds used `CARGO_HOME="$PWD/target/a02-v7/cargo-home"` and `CARGO_TARGET_DIR="$PWD/target/a02-v11/paper"`. Momiru resolved to the existing locked SHA `eba302d3c61313444b56303c8816f74a3aaf9679`.
+
+| Paper command | Exit | Observed result |
+| --- | ---: | --- |
+| `cargo test --offline --locked --test a02_native_materialization` | 101 → 0 | The first compile identified the public Light alias's single const parameter. Both tests passed after using that signature. |
+| `cargo fmt --all -- --check` | 0 | Passed. |
+| `cargo check --offline --locked --all-targets --all-features` | 0 | Passed. |
+| `cargo test --offline --locked --all-targets --all-features --quiet` | 0 | 48 passed. |
+| `cargo test --offline --locked --release --all-targets --all-features --quiet` | 0 | 48 passed. |
+| `cargo build --offline --locked --release --bin a02-layoutproof` | 0 | Optimized executable built. |
+| `cargo clippy --offline --locked --all-targets --all-features -- -D warnings` | 0 | Passed. |
+| `target/a02-v11/paper/release/a02-layoutproof --mode engine-check --engine both --case C08-composed` | 0 | General and Light both admitted the composition. |
+| `target/a02-v11/paper/release/a02-layoutproof --mode engine-check --engine both --case C08-address-witness` | 1 | Both engines reported a failing rewrite. |
+| `target/a02-v11/paper/release/a02-layoutproof --mode query --case C09-slice-fusion \| z3 -in -smt2` with Bash `pipefail` | 0 | `unsat` for the emitted arithmetic obligation. |
+| `target/a02-v11/paper/release/a02-layoutproof --mode symbolic --case C09-slice-fusion --timeout-ms 0` | 1 | `UNKNOWN Budget`. |
+| `target/a02-v11/paper/release/a02-layoutproof --mode evidence --engine both` | 1 | `NOT_RUN CANONICAL_PROTOCOLS_MISSING`. |
+| `git diff --check` | 0 | Passed. |
+
+Upstream Cargo check, tests and Clippy used `--manifest-path /home/morteza/research-a02/libraries/momiru/Cargo.toml --target-dir target/a02-v11/upstream`.
+
+| Upstream command | Exit | Observed result |
+| --- | ---: | --- |
+| `cargo fmt --manifest-path /home/morteza/research-a02/libraries/momiru/Cargo.toml --all -- --check` | 0 | Passed. |
+| `cargo check --offline --locked --all-targets --all-features` | 0 | Passed. |
+| `cargo test --offline --locked --features aot --quiet` | 0 | 111 tests passed. |
+| `cargo clippy --offline --locked --all-targets --all-features -- -D warnings` | 101 | Upstream `clippy::too_many_arguments` on `cpu_sgemm_primary_seed`. |
+
+GitHub check-runs queries exited 1 because the API was unreachable. The upstream checkout and the paper's CI gates were preserved. Native diagnostic smoke tests ran as part of the Cargo suites. Canonical performance runs and confirmatory evidence remain `NOT_RUN`.
