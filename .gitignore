@@ -1,0 +1,10 @@
+/target/
+/.pixi/
+/dist/
+/output/
+/outputs/
+/evidence/
+/raw-evidence/
+raw_samples.tsv
+*.rmeta
+*.profraw
